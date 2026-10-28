@@ -16,6 +16,8 @@ design:
 
 ## 2. Components
 
+The same structure at C4 levels 1–3 plus dynamic views is in [c4-model.md](c4-model.md).
+
 ```mermaid
 flowchart TB
   subgraph APP["orchestrator-app (CLI)"]
