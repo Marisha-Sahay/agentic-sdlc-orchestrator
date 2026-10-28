@@ -49,7 +49,7 @@ append-only event log records all of it.
 
 ## Validation
 
-- **233 automated tests**, Checkstyle and an 80% coverage gate on every module
+- **234 automated tests**, Checkstyle and an 80% coverage gate on every module
   (orchestrator 90–91% line coverage; service 99.6% with integration tests on real PostgreSQL).
 - **Governance drill** (deterministic, no model): five planted faults (hallucinated file,
   requirement amendment, edit to an applied migration, compile failure, model outage), all caught

@@ -135,18 +135,20 @@ public final class WorkflowEngine {
   public RunOutcome resume(WorkflowGraph graph) {
     List<EventEnvelope> history = events.events();
     Map<String, RunEvent.NodeSucceeded> accepted = new LinkedHashMap<>();
+    // Only executions that finished (succeeded or failed) count: an execution interrupted by a
+    // safe stop produced no outcome, so its resumed run keeps the same number and replay key.
     Map<String, Integer> executions = new HashMap<>();
     String lastCheckpoint = null;
     for (EventEnvelope envelope : history) {
       switch (envelope.event()) {
-        case RunEvent.NodeStarted n when n.attempt() == 1 ->
-            executions.merge(n.nodeId(), 1, Integer::sum);
         case RunEvent.ArtifactProduced a -> artifacts.restore(new Artifact(a.key(), a.version(),
             a.sha256(), a.producedBy(), envelope.at(), artifacts.readPersisted(a.path())));
         case RunEvent.NodeSucceeded s -> {
           accepted.remove(s.nodeId());
           accepted.put(s.nodeId(), s);
+          executions.merge(s.nodeId(), 1, Integer::sum);
         }
+        case RunEvent.NodeFailed f -> executions.merge(f.nodeId(), 1, Integer::sum);
         case RunEvent.NodeInvalidated i -> accepted.remove(i.nodeId());
         case RunEvent.CheckpointCreated c -> lastCheckpoint = c.checkpoint();
         default -> {

@@ -323,6 +323,40 @@ class WorkflowEngineTest {
   }
 
   @Test
+  void anExecutionInterruptedBySafeStopKeepsItsNumberOnResume() throws Exception {
+    Path killSwitch = tmp.resolve("STOP");
+    Path logFile = tmp.resolve("events.jsonl");
+    Path artifactDir = tmp.resolve("artifacts");
+    List<String> seen = new CopyOnWriteArrayList<>();
+    List<NodeSpec> template = List.of(
+        node("done").task(output("a", "x")).build(),
+        node("again", "done").task(output("b", "y")).build(),
+        node("impl", "done").task(ctx -> {
+          seen.add("e" + ctx.execution() + "/a" + ctx.attempt());
+          if (ctx.attempt() == 1) {
+            Files.writeString(killSwitch, "stop");
+            throw new IllegalStateException("compile error");
+          }
+          return NodeResult.builder().output("code", "ok").build();
+        }).build());
+    EngineConfig config = EngineConfig.defaults().withKillSwitch(killSwitch)
+        .withMaxParallelNodes(1);
+
+    log = new EventLog("run-exec", logFile, Clock.systemUTC());
+    artifacts = new ArtifactStore(artifactDir);
+    assertThat(engine().config(config).build().run(WorkflowGraph.of(template), "s", "r")
+        .status()).isEqualTo(RunStatus.PAUSED);
+    Files.delete(killSwitch);
+    log = new EventLog("run-exec", logFile, Clock.systemUTC());
+    artifacts = new ArtifactStore(artifactDir);
+    RunOutcome resumed = engine().config(config.withKillSwitch(null)).build()
+        .resume(WorkflowGraph.of(template));
+
+    assertThat(resumed.status()).isEqualTo(RunStatus.SUCCEEDED);
+    assertThat(seen).containsExactly("e1/a1", "e1/a1", "e1/a2");
+  }
+
+  @Test
   void attemptBudgetStopsARunawayRetryLoop() {
     WorkflowGraph graph = WorkflowGraph.of(List.of(node("impl")
         .retry(new RetryPolicy(50, Duration.ofMillis(1), 1.0, Duration.ofMillis(1)))
