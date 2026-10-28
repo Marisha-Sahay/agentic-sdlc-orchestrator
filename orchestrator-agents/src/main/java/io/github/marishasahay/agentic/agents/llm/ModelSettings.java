@@ -34,9 +34,9 @@ public record ModelSettings(
    */
   public static ModelSettings fromEnvironment(Map<String, String> env) {
     String primary = env.getOrDefault(MODEL_VAR, "");
-    String fallback = env.getOrDefault(FALLBACK_MODEL_VAR, primary);
+    String fallback = env.getOrDefault(FALLBACK_MODEL_VAR, "");
     return new ModelSettings(env.getOrDefault(API_KEY_VAR, ""), primary,
-        fallback.isBlank() ? primary : fallback, Duration.ofMinutes(3));
+        isPlaceholder(fallback) ? primary : fallback, Duration.ofMinutes(3));
   }
 
   /**

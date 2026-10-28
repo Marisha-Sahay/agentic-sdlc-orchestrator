@@ -87,6 +87,11 @@ class CassetteLlmClientTest {
     assertThatThrownBy(placeholders::requireLiveReady).hasMessageContaining("GEMINI_API_KEY")
         .hasMessageNotContaining("AGENTIC_MODEL");
     assertThat(placeholders.fallbackModel()).isEqualTo("m");
+    assertThat(ModelSettings.fromEnvironment(Map.of(ModelSettings.MODEL_VAR, "primary",
+        ModelSettings.FALLBACK_MODEL_VAR, "<fallback-gemini-model-name>")).fallbackModel())
+        .isEqualTo("primary");
+    assertThat(ModelSettings.fromEnvironment(Map.of(ModelSettings.MODEL_VAR, "primary",
+        ModelSettings.FALLBACK_MODEL_VAR, "secondary")).fallbackModel()).isEqualTo("secondary");
     assertThat(placeholders.toString()).contains("apiKey=unset").doesNotContain("<your");
     assertThat(ModelSettings.fromEnvironment(Map.of(ModelSettings.API_KEY_VAR, "secret",
         ModelSettings.MODEL_VAR, "m")).toString()).doesNotContain("secret");
