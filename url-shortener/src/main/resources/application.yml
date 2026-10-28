@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: url-shortener
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/shortener}
+    username: ${DB_USER:shortener}
+    password: ${DB_PASSWORD:shortener}
+  flyway:
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+
+shortener:
+  base-url: http://localhost:8080
+  code-length: 7
+  redirect-cache:
+    ttl: 10m
+    max-size: 10000
+  rate-limit:
+    requests-per-period: 20
+    period: 1m
+    max-tracked-clients: 100000
+  trust-forwarded-headers: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: url-shortener
+    description: URL shortener service (v1 baseline)
