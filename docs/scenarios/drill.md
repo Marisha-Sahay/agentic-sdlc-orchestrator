@@ -75,8 +75,8 @@ flowchart LR
 | Gate failures / policy blocks | 2 / 1, all recovered |
 | Human checkpoints | 4 (design twice, schema change, release) |
 | Re-plan invalidations | 2 |
-| MTTR | 3.2 s |
-| End-to-end | 22.8 s (of which ~10 s is the full `mvn verify`) |
+| MTTR | 3.1 s |
+| End-to-end | 21.4 s (of which ~10 s is the full `mvn verify`) |
 | Audit log | 129 events, hash chain verified |
 
 Evidence (committed): [run report](../evidence/drill/report.html) (open locally) ·

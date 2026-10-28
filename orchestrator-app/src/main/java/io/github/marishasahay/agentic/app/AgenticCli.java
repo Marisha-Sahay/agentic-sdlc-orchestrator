@@ -172,8 +172,10 @@ public final class AgenticCli {
               "fallbackModel", String.valueOf(models.fallbackModel()),
               "verifyProfile", build.profile(), "approvals", approvalsMode,
               "baseline", scenario.baseline()));
-      String mermaid = graph.toMermaid(id -> outcome.nodeStates().getOrDefault(id,
-          NodeState.PENDING).name().toLowerCase()) + HtmlReport.mermaidClasses();
+      List<EventEnvelope> events = log.events();
+      String mermaid = graph.toMermaid(id -> HtmlReport.nodeClass(events, id,
+          outcome.nodeStates().getOrDefault(id, NodeState.PENDING).name()))
+          + HtmlReport.mermaidClasses();
       write(runDir.resolve("graph.mmd"), mermaid);
       RunMetrics metrics = renderReport(runDir, log.events(), mermaid);
       printSummary(outcome, metrics, runDir);

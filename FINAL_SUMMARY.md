@@ -54,7 +54,7 @@ append-only event log records all of it.
 - **Governance drill** (deterministic, no model): five planted faults (hallucinated file,
   requirement amendment, edit to an applied migration, compile failure, model outage), all caught
   and recovered; final patch passes the full build. 14 nodes, 21 attempts, 5 retries, 1 rollback,
-  1 fallback, 4 human checkpoints, 2 re-plan invalidations, MTTR 3.2 s, 129 hash-chained events.
+  1 fallback, 4 human checkpoints, 2 re-plan invalidations, MTTR 3.1 s, 129 hash-chained events.
 - **Live scenarios** (greenfield, brownfield, ambiguous) run against Gemini through LangChain4j
   and are recorded for replay. See each [scenario page](docs/scenarios) for results.
 

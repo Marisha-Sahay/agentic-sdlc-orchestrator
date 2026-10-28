@@ -75,7 +75,10 @@ final class HtmlReport {
     html.append("</div>");
 
     html.append("<h2>Workflow graph</h2><div class=card><pre class=mermaid>")
-        .append(esc(mermaid)).append("</pre></div>");
+        .append(esc(mermaid)).append("</pre><div class=muted style=\"font-size:12px\">")
+        .append("green: accepted first time &middot; green with amber border: accepted after ")
+        .append("retries or fallback &middot; red: failed &middot; grey: skipped &middot; ")
+        .append("amber: not run</div></div>");
 
     html.append("<h2>Human checkpoints</h2><div class=card><table><tr><th>Node</th>"
         + "<th>Why</th><th>Decision</th><th>Comment</th><th>Amended</th></tr>");
@@ -107,7 +110,7 @@ final class HtmlReport {
     }
     html.append("</table></div>");
 
-    html.append("<h2>Gates, policy and recovery</h2><div class=card><table><tr><th>Time</th>"
+    html.append("<h2>Gates, policy and recovery</h2><div class=card><table><tr><th>Time (UTC)</th>"
         + "<th>Node</th><th>Event</th><th>Detail</th></tr>");
     for (EventEnvelope e : log) {
       String row = switch (e.event()) {
@@ -172,9 +175,28 @@ final class HtmlReport {
     return html.toString();
   }
 
+  /**
+   * Mermaid class per node: its final state, or {@code recovered} for nodes that were accepted
+   * only after a retry or fallback, so the graph shows where the run had to recover.
+   *
+   * @param log run events
+   * @param id node id
+   * @param state final state name
+   * @return Mermaid class name
+   */
+  static String nodeClass(List<EventEnvelope> log, String id, String state) {
+    if (!state.equals("SUCCEEDED")) {
+      return state.toLowerCase();
+    }
+    boolean recovered = log.stream().map(EventEnvelope::event)
+        .anyMatch(e -> e instanceof RunEvent.AttemptFailed f && f.nodeId().equals(id));
+    return recovered ? "recovered" : "succeeded";
+  }
+
   static String mermaidClasses() {
     return """
           classDef succeeded fill:#d6f5e3,stroke:#1a7f4b,color:#0b3d22
+          classDef recovered fill:#d6f5e3,stroke:#d08700,stroke-width:3px,color:#0b3d22
           classDef failed fill:#fde0dc,stroke:#c0362c,color:#5c120c
           classDef skipped fill:#eeeeee,stroke:#999,color:#555,stroke-dasharray:4 3
           classDef pending fill:#fff4d6,stroke:#a86400,color:#4d2e00

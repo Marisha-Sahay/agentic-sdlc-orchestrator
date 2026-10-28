@@ -82,6 +82,10 @@ class ReportingTest {
         .contains("REQUIRE_APPROVAL [schema-migration]").contains("re-planned")
         .contains("safe stop").contains("href=\"artifacts/impl.clicks/v1.txt\"")
         .contains("classDef succeeded").contains("23 hash-chained events");
+    assertThat(HtmlReport.nodeClass(log.events(), "impl-clicks", "SUCCEEDED"))
+        .isEqualTo("recovered");
+    assertThat(HtmlReport.nodeClass(log.events(), "plan", "SUCCEEDED")).isEqualTo("succeeded");
+    assertThat(HtmlReport.nodeClass(log.events(), "docs", "FAILED")).isEqualTo("failed");
     assertThat(HtmlReport.dur(65_000)).isEqualTo("1m 5s");
     assertThat(HtmlReport.dur(1_500)).isEqualTo("1.5s");
     assertThat(HtmlReport.dur(40)).isEqualTo("40ms");
