@@ -4,8 +4,9 @@
 
 The drill runs the real brownfield workflow (the same `WorkflowTemplates`, agents, policy, gates
 and Maven builds) with **hand-authored model replies** instead of a live model, and plants one
-fault per control. It needs no API key, takes about 25 seconds, and is deterministic: two runs
-produce identical retries, rollbacks, fallbacks and MTTR.
+fault per control. It needs no API key, takes about 25 seconds, and is deterministic: every run takes the
+same path (same attempts, retries, rollbacks, fallbacks, checkpoints and patch); only wall-clock
+timings such as MTTR vary by milliseconds.
 
 ```bash
 ./agentic run drill            # replay mode and the scripted reviewer are picked automatically
