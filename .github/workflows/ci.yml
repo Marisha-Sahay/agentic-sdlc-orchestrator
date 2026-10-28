@@ -23,15 +23,16 @@ jobs:
       # Checkstyle and the 80% JaCoCo gate for every module.
       - name: Build and verify
         run: mvn -B -ntp verify
-      - name: Replay recorded scenarios (no API key needed)
-        if: hashFiles('cassettes/**/*.json') != ''
+      # End to end: every scenario with recorded (or hand-authored) model replies, including
+      # the governance drill. Real agents, policy, gates and Maven builds; no API key.
+      - name: Replay scenarios (no API key needed)
         run: |
-          for scenario in greenfield brownfield ambiguous; do
-            if [ -d "cassettes/$scenario" ]; then
-              ./agentic run "$scenario" --llm replay --approvals scripted \
-                --run-id "ci-$scenario" || exit 1
-            fi
+          for dir in cassettes/*/; do
+            scenario="$(basename "$dir")"
+            ./agentic run "$scenario" --llm replay --approvals scripted --run-id "ci-$scenario"
+            ./agentic verify-log "ci-$scenario"
           done
+          ./agentic metrics
       - name: Upload run reports
         if: always()
         uses: actions/upload-artifact@v4

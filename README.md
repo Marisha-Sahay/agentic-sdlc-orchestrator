@@ -57,7 +57,7 @@ join at `integrate` and `verify`.</sub>
 Prerequisites: Java 21, Maven 3.9+, Docker (Testcontainers and local PostgreSQL).
 
 ```bash
-mvn verify                                     # all modules: ~220 tests, Checkstyle, 80% coverage gates
+mvn verify                                     # all modules: 233 tests, Checkstyle, 80% coverage gates
 ./agentic run drill                            # governance drill: no API key, ~25 s, finishes green
 open .runs/drill-*/report.html                 # graph, metrics, checkpoints, lineage, gate evidence
 ./agentic metrics                              # reliability metrics across runs
