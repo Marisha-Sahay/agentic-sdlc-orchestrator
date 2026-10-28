@@ -49,6 +49,7 @@ public final class GitWorkspace implements Workspace {
       workspace.git("config", "commit.gpgsign", "false");
       Files.writeString(root.resolve(".gitignore"), "target/\n", StandardCharsets.UTF_8);
       workspace.checkpoint("baseline");
+      workspace.git("tag", "baseline");
       return workspace;
     } catch (IOException e) {
       throw new UncheckedIOException(e);

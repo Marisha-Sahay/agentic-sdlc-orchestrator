@@ -1,0 +1,22 @@
+name: greenfield
+kind: GREENFIELD
+title: Build the URL shortener service from an empty Spring Boot scaffold
+baseline: scenarios/scaffolds/greenfield
+requirement: |
+  We need a URL shortener service for customer communications.
+  - Create a short link for a long URL, optionally with a custom alias and an expiry time.
+  - Visiting a short link redirects to the original URL. Expired or deleted links must stop working.
+  - Look up a link's details, and delete a link.
+  - The service will be on the public internet: validate input, make it hard to abuse for
+    phishing (e.g. credentials-in-URL tricks, redirect loops) and rate-limit link creation.
+  - Errors must be consistent and machine-readable. Publish an OpenAPI contract and docs.
+  - Persist links in PostgreSQL.
+scriptedApprovals:
+  design:
+    - approve: true
+      comment: >-
+        Design approved. Non-enumerable codes, 302 redirects (keeps analytics possible) and
+        soft delete match our standards.
+  release:
+    - approve: true
+      comment: Approved for staging after reviewing the patch, traceability matrix and risks.

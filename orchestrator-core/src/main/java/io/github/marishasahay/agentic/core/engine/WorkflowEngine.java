@@ -103,8 +103,24 @@ public final class WorkflowEngine {
    * @return final outcome
    */
   public RunOutcome run(WorkflowGraph graph, String scenario, String requirement) {
+    return run(graph, scenario, requirement, Map.of());
+  }
+
+  /**
+   * Executes a fresh run, recording extra settings (model, mode, build profile) for the audit.
+   *
+   * @param graph workflow graph (mutated in place by expansions)
+   * @param scenario scenario name for the audit log
+   * @param requirement raw requirement text (hashed into the log)
+   * @param settings additional settings to record alongside the engine limits
+   * @return final outcome
+   */
+  public RunOutcome run(WorkflowGraph graph, String scenario, String requirement,
+      Map<String, String> settings) {
+    Map<String, String> recorded = new LinkedHashMap<>(config.describe());
+    recorded.putAll(settings);
     events.append(new RunEvent.RunStarted(scenario, Hashing.sha256(requirement), graph.size(),
-        config.describe()));
+        recorded));
     return schedule(graph);
   }
 

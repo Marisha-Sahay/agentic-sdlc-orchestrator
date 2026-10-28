@@ -1,0 +1,26 @@
+name: brownfield
+kind: BROWNFIELD
+title: Add click analytics and fix the cached-expiry bug in the existing service
+baseline: url-shortener
+requirement: |
+  Two changes to the existing URL shortener service:
+
+  1. Click analytics (enhancement). Record every successful redirect - timestamp, referrer host
+     and a coarse user-agent family (browser, bot, other) - without adding noticeable latency to
+     the redirect. Expose GET /api/v1/links/{code}/stats returning total clicks, the time of the
+     last click, and daily click counts for the last 7 days. Do not store raw IP addresses.
+
+  2. Bug fix (issue #1). An expired link keeps redirecting while it is in the redirect cache.
+     Once a link's expiresAt has passed, GET /{code} must return 410 Gone even if it was cached.
+scriptedApprovals:
+  design:
+    # First review sends the design back with feedback; the architect must address it.
+    - approve: false
+      comment: >-
+        Make the click-recording path explicitly asynchronous AND bounded (no unbounded queues;
+        say what happens when the buffer is full), and state a retention policy for click data.
+    - approve: true
+      comment: Feedback addressed. Async bounded recording and retention policy are acceptable.
+  release:
+    - approve: true
+      comment: Approved after reviewing the patch, migration, traceability and security review.

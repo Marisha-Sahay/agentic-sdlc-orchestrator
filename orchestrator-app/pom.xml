@@ -31,6 +31,22 @@
   <build>
     <plugins>
       <plugin>
+        <!-- AgenticCli is the composition root (argument parsing, wiring, System.exit); it is
+             exercised by the end-to-end scenario runs rather than unit tests. -->
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>coverage-gate</id>
+            <configuration>
+              <excludes>
+                <exclude>io/github/marishasahay/agentic/app/AgenticCli*</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <executions>

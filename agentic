@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Wrapper for the orchestrator CLI. Builds the jar on first use.
+#   ./agentic run brownfield
+#   ./agentic run ambiguous --approvals interactive
+#   ./agentic metrics
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR="$ROOT/orchestrator-app/target/agentic.jar"
+
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [[ ! -f "$JAR" || "${AGENTIC_REBUILD:-}" == "1" ]]; then
+  echo "Building orchestrator (first run)..." >&2
+  mvn -q -B -ntp -f "$ROOT/pom.xml" -pl orchestrator-app -am package -DskipTests \
+    -Dcheckstyle.skip -Djacoco.skip=true >&2
+fi
+
+cd "$ROOT"
+exec java -jar "$JAR" "$@"

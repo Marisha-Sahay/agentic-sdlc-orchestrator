@@ -1,0 +1,29 @@
+name: ambiguous
+kind: AMBIGUOUS
+title: '"Make it handle heavy traffic and give us stats" - an ambiguous request'
+baseline: url-shortener
+requirement: |
+  From: Marketing team
+  "Our short links feel slow during campaigns and we have no idea what's happening with them.
+  Can you make it handle heavy traffic and give us some stats?"
+scriptedApprovals:
+  clarify:
+    # The stakeholder's answers, applied as an amendment at the clarification checkpoint.
+    - approve: true
+      comment: Answers from the marketing lead (clarification call, 2026-10-28).
+      amendments:
+        clarification.answers: |
+          Traffic: campaign peaks of about 2,000 redirects/second; redirect p99 latency must stay
+          under 50 ms at that load. Link creation volume is low (a few hundred per day).
+          Stats wanted: per-link total clicks, clicks per day for the last 30 days, and top
+          referrer hosts. No dashboard UI in this iteration; a JSON API is enough.
+          Freshness: stats may lag real time by up to one minute.
+          Privacy: no personal data; do not store IP addresses or full user agents.
+          Retention: keep click data for 90 days.
+          Out of scope: geo-location, A/B testing, authentication changes.
+  design:
+    - approve: true
+      comment: Design approved; it meets the latency target without new infrastructure.
+  release:
+    - approve: true
+      comment: Approved after reviewing patch, traceability and risks.
