@@ -19,6 +19,8 @@ import java.util.Map;
  * @param baseline directory (relative to the repo root) copied into the run workspace
  * @param requirement raw stakeholder request
  * @param scriptedApprovals node id to decisions, used with {@code --approvals scripted}
+ * @param approvals default approval mode when {@code --approvals} is not given, or null to pick
+ *     interactive when a terminal is attached
  */
 public record Scenario(
     String name,
@@ -26,7 +28,8 @@ public record Scenario(
     String title,
     String baseline,
     String requirement,
-    Map<String, List<ScriptedDecision>> scriptedApprovals) {
+    Map<String, List<ScriptedDecision>> scriptedApprovals,
+    String approvals) {
 
   private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory())
       .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);

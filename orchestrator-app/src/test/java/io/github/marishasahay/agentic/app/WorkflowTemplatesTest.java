@@ -84,5 +84,7 @@ class WorkflowTemplatesTest {
     assertThat(ambiguous.scriptedApprovals().get("clarify").getFirst().amendments())
         .containsKey("clarification.answers");
     assertThat(brownfield.startsFromExistingCode()).isTrue();
+    assertThat(brownfield.approvals()).isNull();
+    assertThat(Scenario.load(SCENARIOS.resolve("drill.yaml")).approvals()).isEqualTo("scripted");
   }
 }

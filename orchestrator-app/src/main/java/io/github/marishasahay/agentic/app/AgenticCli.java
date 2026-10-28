@@ -111,8 +111,8 @@ public final class AgenticCli {
       scenario = loadScenario(args.target());
       mode = args.option("llm").map(v -> LlmMode.valueOf(v.toUpperCase()))
           .orElse(hasCassettes(scenario) ? LlmMode.REPLAY : LlmMode.LIVE);
-      approvalsMode = args.option("approvals")
-          .orElse(System.console() != null ? "interactive" : "scripted");
+      approvalsMode = args.option("approvals").orElse(scenario.approvals() != null
+          ? scenario.approvals() : System.console() != null ? "interactive" : "scripted");
       String runId = args.option("run-id").orElse(scenario.name() + "-"
           + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")));
       runDir = runsDir().resolve(runId);
