@@ -1,0 +1,12 @@
+target/
+.runs/
+*.class
+*.log
+.idea/
+*.iml
+.vscode/
+.DS_Store
+.env
+*.env
+# The assessment brief is confidential to the hiring company; never commit it.
+*.pdf
