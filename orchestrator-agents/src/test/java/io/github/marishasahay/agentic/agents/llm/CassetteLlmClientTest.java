@@ -64,6 +64,22 @@ class CassetteLlmClientTest {
   }
 
   @Test
+  void handAuthoredFixturesAreLabelledAndCanSimulateOutages() throws Exception {
+    Files.writeString(cassettes.resolve("docs_e1_attempt-1_primary_tech-writer.json"), """
+        {"key":"docs/e1/attempt-1/primary/tech-writer","agent":"tech-writer","model":"fixture",
+         "promptSha256":"*","response":null,"error":"503 UNAVAILABLE: model overloaded"}""");
+    Files.writeString(cassettes.resolve("plan_e1_attempt-1_primary_planner.json"), """
+        {"key":"plan/e1/attempt-1/primary/planner","agent":"planner","model":"fixture",
+         "promptSha256":"*","response":"{}"}""");
+    CassetteLlmClient replay = new CassetteLlmClient(null, cassettes, LlmMode.REPLAY);
+
+    assertThatThrownBy(() -> replay.complete(call("docs/e1/attempt-1/primary/tech-writer", "p")))
+        .hasMessage("503 UNAVAILABLE: model overloaded");
+    assertThat(replay.complete(call("plan/e1/attempt-1/primary/planner", "anything")).mode())
+        .isEqualTo("fixture");
+  }
+
+  @Test
   void modelSettingsTreatPlaceholdersAsMissing() {
     ModelSettings placeholders = ModelSettings.fromEnvironment(Map.of(
         ModelSettings.API_KEY_VAR, "<your-gemini-api-key>", ModelSettings.MODEL_VAR, "m"));

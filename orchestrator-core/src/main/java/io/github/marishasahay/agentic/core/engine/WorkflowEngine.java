@@ -135,9 +135,12 @@ public final class WorkflowEngine {
   public RunOutcome resume(WorkflowGraph graph) {
     List<EventEnvelope> history = events.events();
     Map<String, RunEvent.NodeSucceeded> accepted = new LinkedHashMap<>();
+    Map<String, Integer> executions = new HashMap<>();
     String lastCheckpoint = null;
     for (EventEnvelope envelope : history) {
       switch (envelope.event()) {
+        case RunEvent.NodeStarted n when n.attempt() == 1 ->
+            executions.merge(n.nodeId(), 1, Integer::sum);
         case RunEvent.ArtifactProduced a -> artifacts.restore(new Artifact(a.key(), a.version(),
             a.sha256(), a.producedBy(), envelope.at(), artifacts.readPersisted(a.path())));
         case RunEvent.NodeSucceeded s -> {
@@ -165,6 +168,7 @@ public final class WorkflowEngine {
     if (workspace != null && lastCheckpoint != null) {
       workspace.rollbackTo(lastCheckpoint);
     }
+    runner.restoreExecutions(executions);
     events.append(new RunEvent.RunResumed(states.size()));
     return schedule(graph);
   }

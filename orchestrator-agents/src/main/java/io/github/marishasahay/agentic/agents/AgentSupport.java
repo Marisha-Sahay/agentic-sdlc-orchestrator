@@ -39,8 +39,8 @@ public final class AgentSupport {
    * @return the parsed reply
    */
   public <T> T ask(NodeContext ctx, String agent, String system, String user, Class<T> type) {
-    String key = ctx.node().id() + "/attempt-" + ctx.attempt() + "/" + ctx.strategy() + "/"
-        + agent;
+    String key = ctx.node().id() + "/e" + ctx.execution() + "/attempt-" + ctx.attempt() + "/"
+        + ctx.strategy() + "/" + agent;
     LlmReply reply = client.complete(new LlmCall(key, agent, system + "\n\n" + OUTPUT_RULES,
         user + feedbackSection(ctx.feedback()), type));
     ctx.recordAgentCall(agent, reply.model(), reply.mode(), reply.latencyMs(),

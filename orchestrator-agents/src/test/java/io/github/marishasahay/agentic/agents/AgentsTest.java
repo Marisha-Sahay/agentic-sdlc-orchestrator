@@ -88,7 +88,7 @@ class AgentsTest {
             .startsWith("requirement.raw@v1"));
     assertThat(events(h, RunEvent.AgentCalled.class)).singleElement()
         .satisfies(c -> assertThat(c.inputTokens()).isEqualTo(100));
-    assertThat(h.calls.getFirst().key()).isEqualTo("agent/attempt-1/primary/requirements-analyst");
+    assertThat(h.calls.getFirst().key()).isEqualTo("agent/e1/attempt-1/primary/requirements-analyst");
   }
 
   @Test

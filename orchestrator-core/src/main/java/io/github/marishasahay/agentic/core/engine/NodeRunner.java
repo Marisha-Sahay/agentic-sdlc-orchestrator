@@ -26,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -61,6 +62,7 @@ final class NodeRunner {
   private final AtomicInteger agentCalls;
   private final ExecutorService taskExecutor;
   private final Runnable budgetCheck;
+  private final Map<String, AtomicInteger> executions = new ConcurrentHashMap<>();
 
   NodeRunner(String runId, ArtifactStore artifacts, Workspace workspace, PolicyEngine policy,
       ApprovalGateway approvals, EventLog events, Clock clock, StopController stop,
@@ -81,9 +83,19 @@ final class NodeRunner {
     this.budgetCheck = budgetCheck;
   }
 
+  /**
+   * Seeds execution counters from a resumed run's history so replay keys stay unique.
+   *
+   * @param counts node id to executions already performed
+   */
+  void restoreExecutions(Map<String, Integer> counts) {
+    counts.forEach((id, n) -> executions.put(id, new AtomicInteger(n)));
+  }
+
   NodeOutcome run(NodeSpec node) {
     try {
-      return runGoverned(node);
+      return runGoverned(node,
+          executions.computeIfAbsent(node.id(), k -> new AtomicInteger()).incrementAndGet());
     } catch (RuntimeException e) {
       String reason = "engine error: " + e;
       events.append(new RunEvent.NodeFailed(node.id(), node.stage().name(), reason));
@@ -91,7 +103,7 @@ final class NodeRunner {
     }
   }
 
-  private NodeOutcome runGoverned(NodeSpec node) {
+  private NodeOutcome runGoverned(NodeSpec node, int execution) {
     GateContext entryContext = new GateContext(node, artifacts, Map.of(), workspaceRoot());
     for (Gate gate : node.entryGates()) {
       GateResult result = evaluate(gate, entryContext);
@@ -125,7 +137,7 @@ final class NodeRunner {
         attempts.incrementAndGet();
         events.append(new RunEvent.NodeStarted(node.id(), node.stage().name(), attempt,
             strategy.name()));
-        AttemptResult result = attempt(node, strategy, attempt, feedback);
+        AttemptResult result = attempt(node, strategy, execution, attempt, feedback);
         if (result.outcome() != null) {
           return result.outcome();
         }
@@ -144,10 +156,10 @@ final class NodeRunner {
     return NodeOutcome.failed(node.id(), reason);
   }
 
-  private AttemptResult attempt(NodeSpec node, Strategy strategy, int attempt,
+  private AttemptResult attempt(NodeSpec node, Strategy strategy, int execution, int attempt,
       List<String> feedback) {
-    NodeContext context = new NodeContext(runId, node, attempt, strategy.name(), feedback,
-        artifacts, workspaceRoot(), events, agentCalls, stop);
+    NodeContext context = new NodeContext(runId, node, execution, attempt, strategy.name(),
+        feedback, artifacts, workspaceRoot(), events, agentCalls, stop);
     NodeResult result;
     try {
       result = executeWithTimeout(strategy.task(), context, node.timeout());

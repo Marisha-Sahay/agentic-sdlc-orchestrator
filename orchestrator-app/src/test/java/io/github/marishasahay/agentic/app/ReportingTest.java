@@ -100,7 +100,7 @@ class ReportingTest {
 
     assertThat(out).contains("RUN run-1 started: brownfield").contains("restored from the log")
         .contains("model coder").contains("FAIL exit gate maven-compile")
-        .contains("rollback to abcdef12").contains("retrying with feedback")
+        .contains("rollback to abcdef12").contains("rejected (gate-failed): cannot find symbol")
         .contains("fallback strategy activated").contains("[fallback]")
         .contains("waiting for human approval").contains("amended [requirements.spec]")
         .contains("succeeded (2 attempts)").contains("plan expanded into [impl-clicks]")

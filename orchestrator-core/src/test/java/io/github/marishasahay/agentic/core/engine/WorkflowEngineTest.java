@@ -210,6 +210,7 @@ class WorkflowEngineTest {
   void replansConsumersWhenAReviewerAmendsAnUpstreamArtifact() {
     AtomicInteger designRuns = new AtomicInteger();
     AtomicInteger implRuns = new AtomicInteger();
+    List<Integer> designExecutions = new CopyOnWriteArrayList<>();
     ScriptedApprovalGateway reviewer = new ScriptedApprovalGateway(
         ApprovalDecision.approve("bob", "ok"))
         .script("design", ApprovalDecision.approveWithAmendments("bob", "links must expire",
@@ -218,6 +219,7 @@ class WorkflowEngineTest {
         node("analyse").task(output("requirements", "shorten urls")).build(),
         node("design", "analyse").approval(ApprovalMode.ALWAYS).task(ctx -> {
           designRuns.incrementAndGet();
+          designExecutions.add(ctx.execution());
           return NodeResult.builder().output("design", "design for: " + ctx.input("requirements"))
               .decision(new Decision("storage", "postgres", "durable", List.of("redis")))
               .build();
@@ -231,6 +233,7 @@ class WorkflowEngineTest {
 
     assertThat(outcome.status()).isEqualTo(RunStatus.SUCCEEDED);
     assertThat(designRuns).hasValue(2);
+    assertThat(designExecutions).containsExactly(1, 2);
     assertThat(implRuns).hasValue(1);
     assertThat(artifacts.content("code")).contains("expire after 30 days");
     assertThat(artifacts.history("requirements")).extracting(a -> a.producedBy())

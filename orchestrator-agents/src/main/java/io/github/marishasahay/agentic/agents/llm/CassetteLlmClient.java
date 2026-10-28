@@ -14,6 +14,10 @@ import java.time.Instant;
  * of the prompt, because prompts legitimately contain non-deterministic text (build output with
  * timings). The prompt hash is still stored, and a replay whose prompt differs from the recording
  * is reported as {@code replay-drift} so reviewers can see when a replay no longer matches.
+ *
+ * <p>Hand-authored fixtures (used by the governance drill) carry {@code promptSha256 = "*"} and
+ * are reported as {@code fixture}; a fixture may also carry an {@code error} to simulate a model
+ * outage.
  */
 public final class CassetteLlmClient implements LlmClient {
 
@@ -29,10 +33,13 @@ public final class CassetteLlmClient implements LlmClient {
    * @param inputTokens prompt tokens
    * @param outputTokens completion tokens
    * @param recordedAt when it was recorded
+   * @param error simulated failure message (fixtures only), or null
    */
   public record Cassette(
       String key, String agent, String model, String promptSha256, String response,
-      long latencyMs, int inputTokens, int outputTokens, Instant recordedAt) {}
+      long latencyMs, int inputTokens, int outputTokens, Instant recordedAt, String error) {}
+
+  static final String FIXTURE = "*";
 
   private final LlmClient delegate;
   private final Path directory;
@@ -69,7 +76,7 @@ public final class CassetteLlmClient implements LlmClient {
     LlmReply reply = delegate.complete(call);
     Cassette cassette = new Cassette(call.key(), call.agent(), reply.model(), promptSha,
         reply.text(), reply.latencyMs(), reply.inputTokens(), reply.outputTokens(),
-        Instant.now());
+        Instant.now(), null);
     try {
       Files.createDirectories(directory);
       Files.writeString(file, Json.MAPPER.writerWithDefaultPrettyPrinter()
@@ -89,7 +96,11 @@ public final class CassetteLlmClient implements LlmClient {
     try {
       Cassette cassette = Json.read(Files.readString(file, StandardCharsets.UTF_8),
           Cassette.class);
-      String replayMode = cassette.promptSha256().equals(promptSha) ? "replay" : "replay-drift";
+      if (cassette.error() != null) {
+        throw new IllegalStateException(cassette.error());
+      }
+      String replayMode = FIXTURE.equals(cassette.promptSha256()) ? "fixture"
+          : cassette.promptSha256().equals(promptSha) ? "replay" : "replay-drift";
       return new LlmReply(cassette.response(), cassette.model(), replayMode,
           cassette.latencyMs(), cassette.inputTokens(), cassette.outputTokens());
     } catch (IOException e) {

@@ -7,11 +7,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR="$ROOT/orchestrator-app/target/agentic.jar"
 
+# Load .env as data, never as code: KEY=VALUE lines only, optional quotes, comments ignored.
+# Variables already set in the environment win over .env.
 if [[ -f "$ROOT/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/.env"
-  set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]%%[[:space:]]}"
+      if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      fi
+      if [[ -z "${!key:-}" ]]; then
+        export "$key=$value"
+      fi
+    fi
+  done < "$ROOT/.env"
 fi
 
 if [[ ! -f "$JAR" || "${AGENTIC_REBUILD:-}" == "1" ]]; then

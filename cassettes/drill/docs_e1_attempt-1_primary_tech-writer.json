@@ -1,0 +1,12 @@
+{
+  "key": "docs/e1/attempt-1/primary/tech-writer",
+  "agent": "tech-writer",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": null,
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-28T00:00:00Z",
+  "error": "503 UNAVAILABLE: model overloaded (simulated outage)"
+}

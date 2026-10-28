@@ -36,7 +36,7 @@ final class ProgressPrinter implements Consumer<EventEnvelope> {
       case RunEvent.PolicyEvaluated e -> Ansi.magenta("    policy: " + e.findings().stream()
           .map(f -> f.severity() + " " + f.rule()).toList());
       case RunEvent.AttemptFailed e -> Ansi.red("  x " + pad(e.nodeId()) + " attempt "
-          + e.attempt() + " rejected (" + e.reason() + "), retrying with feedback");
+          + e.attempt() + " rejected (" + e.reason() + "): " + first(e.feedback()));
       case RunEvent.FallbackActivated e -> Ansi.yellow("  ~ " + pad(e.nodeId())
           + " fallback strategy activated");
       case RunEvent.RollbackPerformed e -> Ansi.yellow("    rollback to "

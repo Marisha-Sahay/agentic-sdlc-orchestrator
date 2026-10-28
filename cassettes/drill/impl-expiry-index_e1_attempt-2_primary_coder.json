@@ -1,0 +1,12 @@
+{
+  "key": "impl-expiry-index/e1/attempt-2/primary/coder",
+  "agent": "coder",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"summary\": \"Add V2 migration with a partial index on expires_at\", \"files\": [{\"path\": \"src/main/resources/db/migration/V2__index_links_expires_at.sql\", \"content\": \"-- Supports the expired-link cleanup job: find links whose expiry has passed.\\ncreate index idx_links_expires_at on links (expires_at) where expires_at is not null;\\n\"}], \"decisions\": []}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-28T00:00:00Z",
+  "error": null
+}

@@ -1,0 +1,12 @@
+{
+  "key": "impl-expiry-index/e1/attempt-1/primary/coder",
+  "agent": "coder",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"summary\": \"Add the expiry index to the links migration\", \"files\": [{\"path\": \"src/main/resources/db/migration/V1__create_links.sql\", \"content\": \"-- Short links. Rows are never physically deleted: deleted_at marks a soft delete so a code is\\n-- never handed out again. The unique constraint on code is what guarantees uniqueness of both\\n-- generated codes and custom aliases (inserts use ON CONFLICT (code) DO NOTHING).\\ncreate table links (\\n    id          bigint generated always as identity primary key,\\n    code        varchar(32)   not null,\\n    target_url  varchar(2048) not null,\\n    created_at  timestamptz   not null,\\n    expires_at  timestamptz,\\n    deleted_at  timestamptz,\\n    constraint uq_links_code unique (code),\\n    constraint ck_links_expiry_after_creation check (expires_at is null or expires_at > created_at)\\n);\\n\\ncreate index idx_links_expires_at on links (expires_at);\\n\"}], \"decisions\": []}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-28T00:00:00Z",
+  "error": null
+}

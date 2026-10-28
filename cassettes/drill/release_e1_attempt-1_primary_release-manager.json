@@ -1,0 +1,12 @@
+{
+  "key": "release/e1/attempt-1/primary/release-manager",
+  "agent": "release-manager",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"title\": \"Fix: expired links no longer redirect from cache (issue #1); index expires_at\", \"summary\": \"Expiry is enforced on every redirect, including cache hits. A partial index on links.expires_at prepares the cleanup job. No API change.\", \"changes\": [\"Redirect cache stores CachedLink(targetUrl, expiresAt)\", \"LinkResolver re-checks expiry on hits and evicts expired entries\", \"V2 migration: idx_links_expires_at (partial)\"], \"risks\": [\"Index creation locks writes briefly on large tables; use CONCURRENTLY in prod\", \"Reviewer advisory: 410s are not yet counted in metrics\"], \"rollbackPlan\": \"Revert the commit; V2 is additive and can stay, or drop the index with DROP INDEX idx_links_expires_at.\", \"testingSummary\": \"Unit tests for hit/miss/boundary expiry and delete; full verify with Testcontainers integration tests applying V2.\", \"followUps\": [\"Expired-link cleanup job\", \"Metric for 410 responses\"]}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-28T00:00:00Z",
+  "error": null
+}

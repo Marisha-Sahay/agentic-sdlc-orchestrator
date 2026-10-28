@@ -165,29 +165,29 @@ public final class AgenticCli {
       awaitQuietly(finished);
     });
     Runtime.getRuntime().addShutdownHook(hook);
-    RunOutcome outcome;
     try {
-      outcome = resume ? engine.resume(graph)
+      RunOutcome outcome = resume ? engine.resume(graph)
           : engine.run(graph, scenario.name(), scenario.requirement(), Map.of(
               "llmMode", mode.name(), "primaryModel", String.valueOf(models.primaryModel()),
               "fallbackModel", String.valueOf(models.fallbackModel()),
               "verifyProfile", build.profile(), "approvals", approvalsMode,
               "baseline", scenario.baseline()));
+      String mermaid = graph.toMermaid(id -> outcome.nodeStates().getOrDefault(id,
+          NodeState.PENDING).name().toLowerCase()) + HtmlReport.mermaidClasses();
+      write(runDir.resolve("graph.mmd"), mermaid);
+      RunMetrics metrics = renderReport(runDir, log.events(), mermaid);
+      printSummary(outcome, metrics, runDir);
+      return outcome.status() == RunStatus.SUCCEEDED ? 0 : 3;
     } finally {
+      // On Ctrl-C the hook waits for this latch, so the log, report and summary are always
+      // written before the JVM halts.
       finished.countDown();
+      try {
+        Runtime.getRuntime().removeShutdownHook(hook);
+      } catch (IllegalStateException alreadyShuttingDown) {
+        // the hook is running and has just been released
+      }
     }
-    try {
-      Runtime.getRuntime().removeShutdownHook(hook);
-    } catch (IllegalStateException alreadyShuttingDown) {
-      // the hook is running; it only waits for the latch released above
-    }
-
-    String mermaid = graph.toMermaid(id -> outcome.nodeStates().getOrDefault(id,
-        NodeState.PENDING).name().toLowerCase()) + HtmlReport.mermaidClasses();
-    write(runDir.resolve("graph.mmd"), mermaid);
-    RunMetrics metrics = renderReport(runDir, log.events(), mermaid);
-    printSummary(outcome, metrics, runDir);
-    return outcome.status() == RunStatus.SUCCEEDED ? 0 : 3;
   }
 
   private LlmClient llm(ModelSettings models, String model, Path cassettes, LlmMode mode) {
@@ -213,6 +213,8 @@ public final class AgenticCli {
 
   private RunMetrics renderReport(Path runDir, List<EventEnvelope> events, String mermaid) {
     RunMetrics metrics = MetricsCalculator.compute(events);
+    latestVersion(runDir.resolve("artifacts").resolve("release.patch"))
+        .ifPresent(v -> write(runDir.resolve("release.patch"), read(v)));
     write(runDir.resolve("report.html"), HtmlReport.render(events, mermaid, metrics));
     write(runDir.resolve("metrics.json"), AgentSupport.pretty(metrics));
     return metrics;
@@ -232,9 +234,10 @@ public final class AgenticCli {
         m.fallbacks(), m.mttrMs() < 0 ? "n/a" : HtmlReport.dur(m.mttrMs()),
         HtmlReport.dur(m.endToEndMs()), HtmlReport.dur(m.humanWaitMs()), m.agentCalls());
     System.out.println(Ansi.bold("Report: ") + runDir.resolve("report.html").toUri());
-    Path patch = runDir.resolve("artifacts").resolve("release.patch");
-    if (Files.isDirectory(patch)) {
-      System.out.println(Ansi.bold("Patch:  ") + patch + "  (review, then git apply)");
+    Path patch = runDir.resolve("release.patch");
+    if (Files.exists(patch)) {
+      System.out.println(Ansi.bold("Patch:  ") + patch
+          + "  (reviewable outcome: git apply it onto the baseline)");
     }
   }
 
@@ -332,6 +335,21 @@ public final class AgenticCli {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  private static Optional<Path> latestVersion(Path artifactDir) {
+    if (!Files.isDirectory(artifactDir)) {
+      return Optional.empty();
+    }
+    try (Stream<Path> versions = Files.list(artifactDir)) {
+      return versions.max((a, b) -> Integer.compare(version(a), version(b)));
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private static int version(Path file) {
+    return Integer.parseInt(file.getFileName().toString().replaceAll("\\D", ""));
   }
 
   static boolean dockerAvailable() {

@@ -1,0 +1,12 @@
+{
+  "key": "security-review/e1/attempt-1/primary/security-reviewer",
+  "agent": "security-reviewer",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"summary\": \"No new attack surface; expiry is now enforced consistently.\", \"findings\": [{\"severity\": \"LOW\", \"source\": \"reviewer\", \"category\": \"logging\", \"location\": \"LinkResolver\", \"description\": \"Expired-link 410s are not logged, so abuse of expired campaign links is invisible\", \"recommendation\": \"Count 410s in a metric\"}]}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-28T00:00:00Z",
+  "error": null
+}

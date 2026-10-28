@@ -21,6 +21,7 @@ public final class NodeContext {
 
   private final String runId;
   private final NodeSpec node;
+  private final int execution;
   private final int attempt;
   private final String strategy;
   private final List<String> feedback;
@@ -31,11 +32,13 @@ public final class NodeContext {
   private final StopController stop;
   private final Map<String, Artifact> consumed = new LinkedHashMap<>();
 
-  NodeContext(String runId, NodeSpec node, int attempt, String strategy, List<String> feedback,
+  NodeContext(String runId, NodeSpec node, int execution, int attempt, String strategy,
+      List<String> feedback,
       ArtifactStore artifacts, Path workspaceRoot, EventLog events, AtomicInteger agentCalls,
       StopController stop) {
     this.runId = runId;
     this.node = node;
+    this.execution = execution;
     this.attempt = attempt;
     this.strategy = strategy;
     this.feedback = List.copyOf(feedback);
@@ -52,6 +55,16 @@ public final class NodeContext {
 
   public NodeSpec node() {
     return node;
+  }
+
+  /**
+   * How many times this node has been executed in the run, including this one. Greater than 1
+   * after re-planning invalidated an earlier execution; part of the stable replay key.
+   *
+   * @return 1-based execution number
+   */
+  public int execution() {
+    return execution;
   }
 
   public int attempt() {
