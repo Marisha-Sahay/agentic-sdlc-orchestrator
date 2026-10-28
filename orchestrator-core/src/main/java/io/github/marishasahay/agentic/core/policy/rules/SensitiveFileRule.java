@@ -34,7 +34,7 @@ public record SensitiveFileRule(String name, String glob, String reason) impleme
 
   @Override
   public List<PolicyFinding> evaluate(PolicyInput input) {
-    return input.changes().paths().stream()
+    return input.effectiveChanges().paths().stream()
         .filter(p -> Globs.matches(glob, p))
         .map(p -> new PolicyFinding(name, Severity.REQUIRE_APPROVAL, reason, p))
         .toList();

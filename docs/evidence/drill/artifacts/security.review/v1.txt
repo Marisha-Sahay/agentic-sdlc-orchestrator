@@ -1,0 +1,11 @@
+{
+  "summary" : "No new attack surface; expiry is now enforced consistently.",
+  "findings" : [ {
+    "severity" : "LOW",
+    "source" : "reviewer",
+    "category" : "logging",
+    "location" : "LinkResolver",
+    "description" : "Expired-link 410s are not logged, so abuse of expired campaign links is invisible",
+    "recommendation" : "Count 410s in a metric"
+  } ]
+}

@@ -1,0 +1,22 @@
+# Fix: expired links no longer redirect from cache (issue #1); index expires_at
+
+Expiry is enforced on every redirect, including cache hits. A partial index on links.expires_at prepares the cleanup job. No API change.
+
+## Changes
+- Redirect cache stores CachedLink(targetUrl, expiresAt)
+- LinkResolver re-checks expiry on hits and evicts expired entries
+- V2 migration: idx_links_expires_at (partial)
+
+## Risks
+- Index creation locks writes briefly on large tables; use CONCURRENTLY in prod
+- Reviewer advisory: 410s are not yet counted in metrics
+
+## Rollback plan
+Revert the commit; V2 is additive and can stay, or drop the index with DROP INDEX idx_links_expires_at.
+
+## Testing
+Unit tests for hit/miss/boundary expiry and delete; full verify with Testcontainers integration tests applying V2.
+
+## Follow-ups
+- Expired-link cleanup job
+- Metric for 410 responses

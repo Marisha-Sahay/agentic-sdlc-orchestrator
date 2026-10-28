@@ -105,6 +105,18 @@ class PolicyRulesTest {
   }
 
   @Test
+  void rewritingAFileUnchangedIsNotAChange() throws Exception {
+    Files.createDirectories(workspace.resolve("api"));
+    Files.writeString(workspace.resolve("api/openapi.yaml"), "openapi: 3.1.0\n");
+    PolicyEngine engine = new PolicyEngine(List.of(SensitiveFileRule.apiContract()));
+
+    assertThat(engine.evaluate(input(FileChange.write("api/openapi.yaml", "openapi: 3.1.0\n"))))
+        .isEmpty();
+    assertThat(engine.evaluate(input(FileChange.write("api/openapi.yaml", "openapi: 3.1.1\n"))))
+        .singleElement().extracting(PolicyFinding::rule).isEqualTo("api-contract-change");
+  }
+
+  @Test
   void aBrokenRuleFailsClosed() {
     PolicyRule broken = new PolicyRule() {
       @Override

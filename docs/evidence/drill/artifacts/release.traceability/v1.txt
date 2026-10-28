@@ -1,0 +1,12 @@
+| Requirement | Priority | Tasks | Files |
+|---|---|---|---|
+| FR-1: GET /{code} returns 410 Gone once a link's expiresAt has passed, even when the link is in the redirect cache (issue #1). | MUST | resolver-expiry-check | src/main/java/io/github/marishasahay/shortener/link/CachedLink.java<br>src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java<br>src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java |
+| FR-2: Index links.expires_at so the planned expired-link cleanup job can find expired links without a full table scan. | SHOULD | expiry-index | src/main/resources/db/migration/V2__index_links_expires_at.sql |
+| FR-3: Deleting a link stops it redirecting immediately, even if it is cached. | MUST | resolver-expiry-check | src/main/java/io/github/marishasahay/shortener/link/CachedLink.java<br>src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java<br>src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java |
+
+Files changed since baseline:
+
+- src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+- src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
+- src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+- src/main/resources/db/migration/V2__index_links_expires_at.sql

@@ -1,0 +1,279 @@
+{
+  "sources" : [ {
+    "path" : "src/main/java/io/github/marishasahay/shortener/UrlShortenerApplication.java",
+    "name" : "UrlShortenerApplication",
+    "kind" : "class",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ "void main(String[])" ],
+    "lines" : 17
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java",
+    "name" : "CacheConfiguration",
+    "kind" : "class",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ "Cache<String,String> redirectCache(ShortenerProperties, MeterRegistry)" ],
+    "lines" : 30
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/ClockConfiguration.java",
+    "name" : "ClockConfiguration",
+    "kind" : "class",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ "Clock clock()" ],
+    "lines" : 18
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java",
+    "name" : "ShortenerProperties",
+    "kind" : "record",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ ],
+    "lines" : 54
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/AliasAlreadyExistsException.java",
+    "name" : "AliasAlreadyExistsException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "String" ],
+    "publicMethods" : [ ],
+    "lines" : 12
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/AliasPolicy.java",
+    "name" : "AliasPolicy",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ ],
+    "publicMethods" : [ "void validate(String)" ],
+    "lines" : 35
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/CodeGenerationException.java",
+    "name" : "CodeGenerationException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "int" ],
+    "publicMethods" : [ ],
+    "lines" : 13
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/CodeGenerator.java",
+    "name" : "CodeGenerator",
+    "kind" : "interface",
+    "role" : "other",
+    "dependencies" : [ ],
+    "publicMethods" : [ "String generate()" ],
+    "lines" : 14
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/CreateLinkRequest.java",
+    "name" : "CreateLinkRequest",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ ],
+    "lines" : 13
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/InvalidLinkRequestException.java",
+    "name" : "InvalidLinkRequestException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "String" ],
+    "publicMethods" : [ "String field()", "String reason()" ],
+    "lines" : 31
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/Link.java",
+    "name" : "Link",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ "boolean isExpiredAt(Instant)" ],
+    "lines" : 25
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkApiController.java",
+    "name" : "LinkApiController",
+    "kind" : "class",
+    "role" : "controller",
+    "dependencies" : [ "LinkService", "ShortenerProperties" ],
+    "publicMethods" : [ "ResponseEntity<LinkResponse> create(CreateLinkRequest)", "LinkResponse get(String)", "ResponseEntity<Void> delete(String)" ],
+    "lines" : 77
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkConfiguration.java",
+    "name" : "LinkConfiguration",
+    "kind" : "class",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ "CodeGenerator codeGenerator(ShortenerProperties)", "TargetUrlPolicy targetUrlPolicy(ShortenerProperties)", "AliasPolicy aliasPolicy()" ],
+    "lines" : 28
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkExpiredException.java",
+    "name" : "LinkExpiredException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "String" ],
+    "publicMethods" : [ ],
+    "lines" : 11
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkNotFoundException.java",
+    "name" : "LinkNotFoundException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "String" ],
+    "publicMethods" : [ ],
+    "lines" : 11
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkRepository.java",
+    "name" : "LinkRepository",
+    "kind" : "class",
+    "role" : "repository",
+    "dependencies" : [ "JdbcClient" ],
+    "publicMethods" : [ "Optional<Link> insertIfAbsent(String, String, Instant, Instant)", "Optional<Link> findActiveByCode(String)", "boolean softDelete(String, Instant)" ],
+    "lines" : 114
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java",
+    "name" : "LinkResolver",
+    "kind" : "class",
+    "role" : "component",
+    "dependencies" : [ "Cache<String,String>", "LinkRepository", "Clock" ],
+    "publicMethods" : [ "String resolve(String)", "void evict(String)" ],
+    "lines" : 61
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkResponse.java",
+    "name" : "LinkResponse",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ ],
+    "lines" : 21
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkService.java",
+    "name" : "LinkService",
+    "kind" : "class",
+    "role" : "service",
+    "dependencies" : [ "LinkRepository", "CodeGenerator", "TargetUrlPolicy", "AliasPolicy", "LinkResolver", "Clock" ],
+    "publicMethods" : [ "Link create(String, String, Instant)", "Link get(String)", "void delete(String)" ],
+    "lines" : 115
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/RandomBase62CodeGenerator.java",
+    "name" : "RandomBase62CodeGenerator",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "RandomGenerator", "int" ],
+    "publicMethods" : [ "String generate()" ],
+    "lines" : 39
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/RedirectController.java",
+    "name" : "RedirectController",
+    "kind" : "class",
+    "role" : "controller",
+    "dependencies" : [ "LinkResolver" ],
+    "publicMethods" : [ "ResponseEntity<Void> redirect(String)" ],
+    "lines" : 40
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/TargetUrlPolicy.java",
+    "name" : "TargetUrlPolicy",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "String" ],
+    "publicMethods" : [ "String validate(String)" ],
+    "lines" : 77
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolver.java",
+    "name" : "ClientKeyResolver",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ "String resolve(HttpServletRequest)" ],
+    "lines" : 33
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitConfiguration.java",
+    "name" : "RateLimitConfiguration",
+    "kind" : "class",
+    "role" : "config",
+    "dependencies" : [ ],
+    "publicMethods" : [ "RateLimiter rateLimiter(ShortenerProperties, Clock)" ],
+    "lines" : 18
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitDecision.java",
+    "name" : "RateLimitDecision",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ ],
+    "lines" : 20
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededException.java",
+    "name" : "RateLimitExceededException",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "Duration" ],
+    "publicMethods" : [ "long retryAfterSeconds()" ],
+    "lines" : 26
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitInterceptor.java",
+    "name" : "RateLimitInterceptor",
+    "kind" : "class",
+    "role" : "filter",
+    "dependencies" : [ "RateLimiter", "ClientKeyResolver" ],
+    "publicMethods" : [ "boolean preHandle(HttpServletRequest, HttpServletResponse, Object)" ],
+    "lines" : 35
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitWebConfigurer.java",
+    "name" : "RateLimitWebConfigurer",
+    "kind" : "class",
+    "role" : "component",
+    "dependencies" : [ "RateLimiter", "ShortenerProperties" ],
+    "publicMethods" : [ "void addInterceptors(InterceptorRegistry)" ],
+    "lines" : 29
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimiter.java",
+    "name" : "RateLimiter",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "ShortenerProperties.RateLimit", "Clock" ],
+    "publicMethods" : [ "RateLimitDecision tryAcquire(String)" ],
+    "lines" : 53
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/ratelimit/TokenBucket.java",
+    "name" : "TokenBucket",
+    "kind" : "class",
+    "role" : "other",
+    "dependencies" : [ "int", "long" ],
+    "publicMethods" : [ ],
+    "lines" : 46
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/web/FieldViolation.java",
+    "name" : "FieldViolation",
+    "kind" : "record",
+    "role" : "domain",
+    "dependencies" : [ ],
+    "publicMethods" : [ ],
+    "lines" : 9
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/web/ProblemDetailsAdvice.java",
+    "name" : "ProblemDetailsAdvice",
+    "kind" : "class",
+    "role" : "web",
+    "dependencies" : [ ],
+    "publicMethods" : [ "ProblemDetail handleNotFound(LinkNotFoundException)", "ProblemDetail handleExpired(LinkExpiredException)", "ProblemDetail handleAliasConflict(AliasAlreadyExistsException)", "ProblemDetail handleInvalidRequest(InvalidLinkRequestException)", "ResponseEntity<ProblemDetail> handleRateLimited(RateLimitExceededException)", "ProblemDetail handleCodeGeneration(CodeGenerationException)", "ProblemDetail handleUnexpected(Exception)" ],
+    "lines" : 124
+  } ],
+  "endpoints" : [ {
+    "method" : "POST",
+    "path" : "/api/v1/links",
+    "handler" : "LinkApiController#create"
+  }, {
+    "method" : "GET",
+    "path" : "/api/v1/links/{code}",
+    "handler" : "LinkApiController#get"
+  }, {
+    "method" : "DELETE",
+    "path" : "/api/v1/links/{code}",
+    "handler" : "LinkApiController#delete"
+  }, {
+    "method" : "GET",
+    "path" : "/{code:[A-Za-z0-9_-]{4,32}}",
+    "handler" : "RedirectController#redirect"
+  } ],
+  "migrations" : [ "src/main/resources/db/migration/V1__create_links.sql" ],
+  "resources" : [ "api/openapi.yaml", "src/main/resources/application.yml" ],
+  "tests" : [ "src/test/java/io/github/marishasahay/shortener/ActuatorIT.java", "src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java", "src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java", "src/test/java/io/github/marishasahay/shortener/config/ShortenerPropertiesTest.java", "src/test/java/io/github/marishasahay/shortener/link/AliasPolicyTest.java", "src/test/java/io/github/marishasahay/shortener/link/LinkLifecycleIT.java", "src/test/java/io/github/marishasahay/shortener/link/LinkRepositoryIT.java", "src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java", "src/test/java/io/github/marishasahay/shortener/link/LinkServiceTest.java", "src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java", "src/test/java/io/github/marishasahay/shortener/link/RandomBase62CodeGeneratorTest.java", "src/test/java/io/github/marishasahay/shortener/link/TargetUrlPolicyTest.java", "src/test/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolverTest.java", "src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededExceptionTest.java", "src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitIT.java", "src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimiterTest.java", "src/test/java/io/github/marishasahay/shortener/support/MutableClock.java" ]
+}

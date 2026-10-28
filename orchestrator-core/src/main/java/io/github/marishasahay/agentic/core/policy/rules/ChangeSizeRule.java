@@ -20,7 +20,7 @@ public record ChangeSizeRule(int maxLines) implements PolicyRule {
 
   @Override
   public List<PolicyFinding> evaluate(PolicyInput input) {
-    int lines = input.changes().linesTouched();
+    int lines = input.effectiveChanges().linesTouched();
     return lines > maxLines
         ? List.of(new PolicyFinding(name(), Severity.REQUIRE_APPROVAL,
             "change touches " + lines + " lines (limit " + maxLines + ")", null))

@@ -29,7 +29,7 @@ public record SchemaMigrationRule(String migrationGlob) implements PolicyRule {
   @Override
   public List<PolicyFinding> evaluate(PolicyInput input) {
     List<PolicyFinding> findings = new ArrayList<>();
-    for (String path : input.changes().paths()) {
+    for (String path : input.effectiveChanges().paths()) {
       if (!Globs.matches(migrationGlob, path)) {
         continue;
       }

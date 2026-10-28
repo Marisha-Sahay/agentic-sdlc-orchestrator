@@ -1,0 +1,196 @@
+diff --git a/README.md b/README.md
+index e561e16..b953b39 100644
+--- a/README.md
++++ b/README.md
+@@ -131,3 +131,16 @@ src/main/java/io/github/marishasahay/shortener/
+ src/main/resources/db/migration/V1__create_links.sql
+ api/openapi.yaml
+ ```
++
++<!-- api-reference:start -->
++## API reference
++
++_Generated from `api/openapi.yaml`._
++
++| Method | Path | Summary |
++|---|---|---|
++| POST | `/api/v1/links` | Create a short link |
++| GET | `/api/v1/links/{code}` | Get link metadata |
++| DELETE | `/api/v1/links/{code}` | Delete a link |
++| GET | `/{code}` | Redirect to the target URL |
++<!-- api-reference:end -->
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+index c075d3c..12f88ae 100644
+--- a/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
++++ b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+@@ -2,14 +2,15 @@ package io.github.marishasahay.shortener.config;
+ 
+ import com.github.benmanes.caffeine.cache.Cache;
+ import com.github.benmanes.caffeine.cache.Caffeine;
++import io.github.marishasahay.shortener.link.CachedLink;
+ import io.micrometer.core.instrument.MeterRegistry;
+ import io.micrometer.core.instrument.binder.cache.CaffeineCacheMetrics;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ 
+ /**
+- * Builds the redirect cache ({@code code -> target URL}) and publishes its statistics as
+- * Micrometer metrics under {@code cache.*} with tag {@code cache=redirects}.
++ * Builds the redirect cache ({@code code -> target URL and expiry}) and publishes its statistics
++ * as Micrometer metrics under {@code cache.*} with tag {@code cache=redirects}.
+  */
+ @Configuration(proxyBeanMethods = false)
+ public class CacheConfiguration {
+@@ -17,10 +18,10 @@ public class CacheConfiguration {
+   static final String REDIRECT_CACHE_NAME = "redirects";
+ 
+   @Bean
+-  public Cache<String, String> redirectCache(ShortenerProperties properties,
++  public Cache<String, CachedLink> redirectCache(ShortenerProperties properties,
+       MeterRegistry meterRegistry) {
+     ShortenerProperties.RedirectCache settings = properties.redirectCache();
+-    Cache<String, String> cache = Caffeine.newBuilder()
++    Cache<String, CachedLink> cache = Caffeine.newBuilder()
+         .expireAfterWrite(settings.ttl())
+         .maximumSize(settings.maxSize())
+         .recordStats()
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java b/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
+new file mode 100644
+index 0000000..be2070a
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
+@@ -0,0 +1,27 @@
++package io.github.marishasahay.shortener.link;
++
++import java.time.Instant;
++
++/**
++ * What the redirect cache holds for a code: the target and the expiry it was loaded with, so the
++ * expiry can be re-checked on every cache hit (issue #1).
++ *
++ * @param targetUrl where the code redirects to
++ * @param expiresAt expiry instant, or {@code null} if the link never expires
++ */
++public record CachedLink(String targetUrl, Instant expiresAt) {
++
++  static CachedLink of(Link link) {
++    return new CachedLink(link.targetUrl(), link.expiresAt());
++  }
++
++  /**
++   * Whether the cached link has expired at the given instant.
++   *
++   * @param now the instant to evaluate against
++   * @return {@code true} if an expiry is set and {@code now} is at or after it
++   */
++  public boolean isExpiredAt(Instant now) {
++    return expiresAt != null && !now.isBefore(expiresAt);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+index d8bdc9f..08815a6 100644
+--- a/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+@@ -6,12 +6,13 @@ import org.springframework.stereotype.Component;
+ 
+ /**
+  * Resolves short codes to target URLs on the redirect hot path, backed by a Caffeine cache of
+- * {@code code -> target URL} in front of the database.
++ * {@code code -> (target URL, expiry)} in front of the database. Expiry is checked on every
++ * lookup, including cache hits, so a cached link stops redirecting the moment it expires.
+  */
+ @Component
+ public class LinkResolver {
+ 
+-  private final Cache<String, String> redirectCache;
++  private final Cache<String, CachedLink> redirectCache;
+   private final LinkRepository repository;
+   private final Clock clock;
+ 
+@@ -22,7 +23,7 @@ public class LinkResolver {
+    * @param repository link persistence
+    * @param clock time source
+    */
+-  public LinkResolver(Cache<String, String> redirectCache, LinkRepository repository,
++  public LinkResolver(Cache<String, CachedLink> redirectCache, LinkRepository repository,
+       Clock clock) {
+     this.redirectCache = redirectCache;
+     this.repository = repository;
+@@ -35,10 +36,15 @@ public class LinkResolver {
+    * @param code the short code
+    * @return the target URL
+    * @throws LinkNotFoundException if no active link exists for the code
+-   * @throws LinkExpiredException if the link has expired
++   * @throws LinkExpiredException if the link has expired, whether or not it was cached
+    */
+   public String resolve(String code) {
+-    return redirectCache.get(code, this::load);
++    CachedLink link = redirectCache.get(code, this::load);
++    if (link.isExpiredAt(clock.instant())) {
++      redirectCache.invalidate(code);
++      throw new LinkExpiredException(code);
++    }
++    return link.targetUrl();
+   }
+ 
+   /**
+@@ -50,12 +56,12 @@ public class LinkResolver {
+     redirectCache.invalidate(code);
+   }
+ 
+-  private String load(String code) {
++  private CachedLink load(String code) {
+     Link link = repository.findActiveByCode(code)
+         .orElseThrow(() -> new LinkNotFoundException(code));
+     if (link.isExpiredAt(clock.instant())) {
+       throw new LinkExpiredException(code);
+     }
+-    return link.targetUrl();
++    return CachedLink.of(link);
+   }
+ }
+diff --git a/src/main/resources/db/migration/V2__index_links_expires_at.sql b/src/main/resources/db/migration/V2__index_links_expires_at.sql
+new file mode 100644
+index 0000000..6471be5
+--- /dev/null
++++ b/src/main/resources/db/migration/V2__index_links_expires_at.sql
+@@ -0,0 +1,2 @@
++-- Supports the expired-link cleanup job: find links whose expiry has passed.
++create index idx_links_expires_at on links (expires_at) where expires_at is not null;
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+index 3f28c0c..bfdd7f0 100644
+--- a/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+@@ -69,7 +69,31 @@ class LinkResolverTest {
+   }
+ 
+   @Test
+-  void shouldReloadFromRepositoryAfterEviction() {
++  void shouldReturnGoneWhenACachedLinkExpiresIssue1() {
++    when(repository.findActiveByCode("abcdefg"))
++        .thenReturn(Optional.of(link(NOW.plusSeconds(60))));
++    assertThat(resolver.resolve("abcdefg")).isEqualTo(TARGET);
++
++    clock.setInstant(NOW.plusSeconds(60));
++
++    assertThatThrownBy(() -> resolver.resolve("abcdefg"))
++        .isInstanceOf(LinkExpiredException.class);
++    verify(repository, times(1)).findActiveByCode("abcdefg");
++  }
++
++  @Test
++  void shouldKeepServingACachedLinkUntilItsExpiry() {
++    when(repository.findActiveByCode("abcdefg"))
++        .thenReturn(Optional.of(link(NOW.plusSeconds(60))));
++    resolver.resolve("abcdefg");
++
++    clock.setInstant(NOW.plusSeconds(59));
++
++    assertThat(resolver.resolve("abcdefg")).isEqualTo(TARGET);
++  }
++
++  @Test
++  void shouldStopServingADeletedLinkImmediatelyEvenWhenCached() {
+     when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(null)));
+     resolver.resolve("abcdefg");
+ 

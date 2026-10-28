@@ -1,0 +1,38 @@
+{
+  "summary" : "The defect is confined to LinkResolver: the cache stores only the target URL, so expiry cannot be re-checked on a hit. The cache value type changes to a record holding the expiry; the index is an additive migration.",
+  "components" : [ {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java",
+    "kind" : "cache",
+    "change" : "MODIFY",
+    "reason" : "check expiry on every lookup, not only on load"
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java",
+    "kind" : "config",
+    "change" : "MODIFY",
+    "reason" : "cache value type becomes CachedLink"
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/CachedLink.java",
+    "kind" : "domain",
+    "change" : "ADD",
+    "reason" : "cache value carrying target URL and expiry"
+  }, {
+    "path" : "src/main/resources/db/migration/V2__index_links_expires_at.sql",
+    "kind" : "migration",
+    "change" : "ADD",
+    "reason" : "partial index on expires_at"
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java",
+    "kind" : "test",
+    "change" : "MODIFY",
+    "reason" : "regression tests for issue #1"
+  } ],
+  "apiChanges" : [ "None; GET /{code} already documents 410 for expired links" ],
+  "dataChanges" : [ "V2: create index idx_links_expires_at on links(expires_at) where expires_at is not null" ],
+  "dataFlows" : [ "Redirect hit path: cache lookup now followed by an in-memory expiry check" ],
+  "risks" : [ {
+    "description" : "Index build on a large table",
+    "impact" : "lock during migration",
+    "mitigation" : "table is small today; use CREATE INDEX CONCURRENTLY in production"
+  } ],
+  "testStrategy" : "Unit tests with MutableClock for hit/miss/boundary expiry; Flyway applies V2 in the Testcontainers integration tests."
+}

@@ -1,0 +1,2 @@
+Add V2 migration with a partial index on expires_at
+Files: [src/main/resources/db/migration/V2__index_links_expires_at.sql]

@@ -1,0 +1,38 @@
+flowchart LR
+  intake["intake<br/><small>requirements</small>"]:::succeeded
+  requirements["requirements<br/><small>requirements</small>"]:::succeeded
+  intake --> requirements
+  codebase_scan["codebase-scan<br/><small>codebase analysis</small>"]:::succeeded
+  intake --> codebase_scan
+  impact_analysis["impact-analysis<br/><small>codebase analysis</small>"]:::succeeded
+  requirements --> impact_analysis
+  codebase_scan --> impact_analysis
+  design["design<br/><small>design</small>"]:::succeeded
+  impact_analysis --> design
+  plan["plan<br/><small>planning</small>"]:::succeeded
+  design --> plan
+  impl_resolver_expiry_check["impl-resolver-expiry-check<br/><small>implementation</small>"]:::succeeded
+  plan --> impl_resolver_expiry_check
+  impl_expiry_index["impl-expiry-index<br/><small>implementation</small>"]:::succeeded
+  plan --> impl_expiry_index
+  integrate["integrate<br/><small>implementation</small>"]:::succeeded
+  plan --> integrate
+  impl_resolver_expiry_check --> integrate
+  impl_expiry_index --> integrate
+  tests["tests<br/><small>testing</small>"]:::succeeded
+  integrate --> tests
+  docs["docs<br/><small>documentation</small>"]:::succeeded
+  integrate --> docs
+  security_review["security-review<br/><small>security review</small>"]:::succeeded
+  integrate --> security_review
+  verify["verify<br/><small>verification</small>"]:::succeeded
+  tests --> verify
+  docs --> verify
+  security_review --> verify
+  release["release<br/><small>release readiness</small>"]:::succeeded
+  verify --> release
+  classDef succeeded fill:#d6f5e3,stroke:#1a7f4b,color:#0b3d22
+  classDef failed fill:#fde0dc,stroke:#c0362c,color:#5c120c
+  classDef skipped fill:#eeeeee,stroke:#999,color:#555,stroke-dasharray:4 3
+  classDef pending fill:#fff4d6,stroke:#a86400,color:#4d2e00
+  classDef running fill:#dfe8ff,stroke:#2f5bb7,color:#12275a

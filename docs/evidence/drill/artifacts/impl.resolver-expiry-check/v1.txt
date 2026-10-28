@@ -1,0 +1,2 @@
+Check expiry on cache hits via a CachedLink value (adds the missing record)
+Files: [src/main/java/io/github/marishasahay/shortener/link/CachedLink.java, src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java, src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java]
