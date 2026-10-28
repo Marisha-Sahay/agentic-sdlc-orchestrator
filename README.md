@@ -105,6 +105,7 @@ from the log without repeating accepted work.
 
 - [Architecture](docs/architecture.md): components, orchestration model, control flow, state
 - [C4 model](docs/c4-model.md): context, container, component and dynamic views of the workflow
+- [Key methods](docs/key-methods.md): the important methods of every module, one line each
 - [Architecture decision records](docs/adr): the key choices and their trade-offs
 - [Requirements](docs/requirements.md) and the [traceability matrix](docs/requirements-traceability.md)
 - [Testing approach](docs/testing.md)
