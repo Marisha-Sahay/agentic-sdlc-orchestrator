@@ -26,6 +26,7 @@
     <jacoco.version>0.8.16</jacoco.version>
     <checkstyle-plugin.version>3.6.0</checkstyle-plugin.version>
     <checkstyle.version>14.3.0</checkstyle.version>
+    <springdoc.version>3.1.1</springdoc.version>
     <jacoco.line.coverage>0.80</jacoco.line.coverage>
     <!--
       Integration tests (*IT) need Docker for Testcontainers. `-DskipITs` skips them and, with
@@ -57,6 +58,12 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <!-- Swagger UI only; it renders the checked-in contract api/openapi.yaml (see application.yml). -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>${springdoc.version}</version>
     </dependency>
     <dependency>
       <groupId>com.github.ben-manes.caffeine</groupId>
@@ -105,6 +112,36 @@
             <goals>
               <goal>build-info</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!--
+        Puts the API contract on the classpath (served at /openapi.yaml by ApiContractController
+        for Swagger UI). Copied rather than moved so api/openapi.yaml stays the single source of
+        truth that the API compatibility gate reads.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>serve-api-contract</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>copy-resources</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.outputDirectory}/api</outputDirectory>
+              <resources>
+                <resource>
+                  <directory>${project.basedir}/api</directory>
+                  <includes>
+                    <include>openapi.yaml</include>
+                  </includes>
+                </resource>
+              </resources>
+            </configuration>
           </execution>
         </executions>
       </plugin>

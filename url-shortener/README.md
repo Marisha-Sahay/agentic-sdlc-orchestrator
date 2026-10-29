@@ -16,6 +16,35 @@ mvn spring-boot:run       # applies Flyway migrations and starts on http://local
 
 Stop the database with `docker compose down` (add `-v` to drop the data volume).
 
+## Try it in the browser (Swagger UI)
+
+With the service running, open <http://localhost:8080/swagger-ui.html>. The page renders the
+checked-in contract [`api/openapi.yaml`](api/openapi.yaml), served unchanged at `/openapi.yaml`,
+rather than a spec generated from the code. It therefore documents exactly what the API
+compatibility gate enforces. "Try it out" is enabled on every operation and sends real requests
+to the running service; the request examples come from the contract.
+
+A walkthrough that exercises every behaviour:
+
+1. `POST /api/v1/links` with the `generated` example: 201 with `code` and `shortUrl`.
+2. The same operation with `customAliasWithExpiry`: 201. Send it again: 409 `Alias already in use`.
+3. `GET /api/v1/links/{code}`: 200. An unknown code: 404.
+4. `GET /{code}` with an unknown code: 404 problem document. For a real code, open its `shortUrl`
+   in a new tab, or use `curl -i`, to see the 302. Swagger UI cannot show a redirect: the
+   browser follows it to the target site and, unless that site allows cross-origin requests,
+   reports "Failed to fetch". That is the browser's CORS check, not a service failure.
+5. `DELETE /api/v1/links/{code}`: 204. Afterwards `GET /{code}` returns 404 and creating the same
+   alias returns 409, because codes are never reused.
+6. Invalid input returns 400 with an `errors` list: leave out `url`, use
+   `https://bank.com@evil.com`, or use the reserved alias `swagger`.
+7. More than 20 `POST`s within a minute return 429 with `Retry-After`.
+8. Expiry: create a link whose `expiresAt` is a minute ahead and wait; `GET /{code}` returns 410.
+   If you followed the link before it expired, it keeps redirecting until its cache entry
+   expires (up to 10 minutes). That is the known defect the brownfield scenario fixes
+   ([issue #1](../docs/scenarios/brownfield.md)).
+
+Swagger UI is a development aid; switch it off with `SPRINGDOC_SWAGGERUI_ENABLED=false`.
+
 ## Building and testing
 
 | Command | What runs | Needs Docker |
@@ -127,7 +156,7 @@ src/main/java/io/github/marishasahay/shortener/
   config/     ShortenerProperties, ClockConfiguration, CacheConfiguration
   link/       domain, service, repository, controllers, policies, code generator, DTOs, exceptions
   ratelimit/  RateLimiter, TokenBucket, interceptor and its registration
-  web/        ProblemDetailsAdvice (RFC 9457 error mapping)
+  web/        ProblemDetailsAdvice (RFC 9457 error mapping), ApiContractController (/openapi.yaml)
 src/main/resources/db/migration/V1__create_links.sql
-api/openapi.yaml
+api/openapi.yaml    the API contract; also what Swagger UI shows
 ```

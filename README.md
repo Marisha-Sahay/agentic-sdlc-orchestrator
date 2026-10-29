@@ -57,7 +57,7 @@ join at `integrate` and `verify`.</sub>
 Prerequisites: Java 21, Maven 3.9+, Docker (Testcontainers and local PostgreSQL).
 
 ```bash
-mvn verify                                     # all modules: 234 tests, Checkstyle, 80% coverage gates
+mvn verify                                     # all modules: 244 tests, Checkstyle, 80% coverage gates
 ./agentic run drill                            # governance drill: no API key, ~25 s, finishes green
 open .runs/drill-*/report.html                 # graph, metrics, checkpoints, lineage, gate evidence
 ./agentic metrics                              # reliability metrics across runs
@@ -79,6 +79,13 @@ cp .env.example .env       # set GEMINI_API_KEY and AGENTIC_MODEL (git-ignored)
 
 `./agentic stop <run-id>` engages the kill switch (safe stop); `./agentic resume <run-id>` continues
 from the log without repeating accepted work.
+
+To try the URL shortener itself, start it and test every endpoint from the browser:
+
+```bash
+cd url-shortener && docker compose up -d && mvn spring-boot:run   # service on :8080
+open http://localhost:8080/swagger-ui.html    # second terminal: Swagger UI, "Try it out" enabled
+```
 
 ## Scenarios
 

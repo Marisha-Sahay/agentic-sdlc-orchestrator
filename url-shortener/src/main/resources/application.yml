@@ -23,6 +23,16 @@ shortener:
     max-tracked-clients: 100000
   trust-forwarded-headers: false
 
+# Swagger UI at /swagger-ui.html, showing the hand-written contract instead of a spec generated
+# from the code, so the UI and the API compatibility gate see the same document. The generated
+# /v3/api-docs endpoint is switched off; springdoc.api-docs.enabled must stay on for the UI.
+springdoc:
+  enable-default-api-docs: false
+  swagger-ui:
+    url: /openapi.yaml
+    try-it-out-enabled: true
+    display-request-duration: true
+
 management:
   endpoints:
     web:

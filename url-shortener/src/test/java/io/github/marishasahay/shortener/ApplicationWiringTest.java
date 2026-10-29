@@ -1,5 +1,7 @@
 package io.github.marishasahay.shortener;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -9,12 +11,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.github.marishasahay.shortener.link.Link;
 import io.github.marishasahay.shortener.link.LinkRepository;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -66,6 +71,30 @@ class ApplicationWiringTest {
     mockMvc.perform(get("/wired01")).andExpect(status().isFound());
 
     verify(repository, times(1)).findActiveByCode("wired01");
+  }
+
+  @Test
+  void shouldServeSwaggerUiConfiguredWithTheCheckedInContract() throws Exception {
+    mockMvc.perform(get("/swagger-ui.html"))
+        .andExpect(status().isFound())
+        .andExpect(header().string("Location", endsWith("/swagger-ui/index.html")));
+    mockMvc.perform(get("/swagger-ui/index.html"))
+        .andExpect(status().isOk())
+        .andExpect(content().string(containsString("swagger-ui")));
+    mockMvc.perform(get("/v3/api-docs/swagger-config"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.url").value("/openapi.yaml"));
+  }
+
+  @Test
+  void shouldServeTheApiContractUnchangedAndGenerateNoSpecFromCode() throws Exception {
+    String contract = Files.readString(Path.of("api/openapi.yaml"));
+
+    mockMvc.perform(get("/openapi.yaml"))
+        .andExpect(status().isOk())
+        .andExpect(content().contentType("application/yaml"))
+        .andExpect(content().string(contract));
+    mockMvc.perform(get("/v3/api-docs")).andExpect(status().isNotFound());
   }
 
   @Test

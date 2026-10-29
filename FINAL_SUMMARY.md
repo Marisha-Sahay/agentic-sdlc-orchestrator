@@ -23,7 +23,7 @@ append-only event log records all of it.
 | Artifact | Location |
 |---|---|
 | Orchestrator (engine, agents, CLI) | `orchestrator-core`, `orchestrator-agents`, `orchestrator-app`, `./agentic` |
-| URL shortener v1 (API, schema, tests, docs) | `url-shortener/` (OpenAPI: `url-shortener/api/openapi.yaml`) |
+| URL shortener v1 (API, schema, tests, docs) | `url-shortener/` (OpenAPI: `url-shortener/api/openapi.yaml`, browsable in Swagger UI at `/swagger-ui.html`) |
 | Scenarios | `scenarios/*.yaml`, greenfield scaffold, `cassettes/` |
 | Architecture and decisions | [docs/architecture.md](docs/architecture.md), [docs/adr](docs/adr) (15 ADRs) |
 | Requirements and traceability | [docs/requirements.md](docs/requirements.md), [docs/requirements-traceability.md](docs/requirements-traceability.md) |
@@ -49,7 +49,7 @@ append-only event log records all of it.
 
 ## Validation
 
-- **234 automated tests**, Checkstyle and an 80% coverage gate on every module
+- **244 automated tests**, Checkstyle and an 80% coverage gate on every module
   (orchestrator 90–91% line coverage; service 99.6% with integration tests on real PostgreSQL).
 - **Governance drill** (deterministic, no model): five planted faults (hallucinated file,
   requirement amendment, edit to an applied migration, compile failure, model outage), all caught

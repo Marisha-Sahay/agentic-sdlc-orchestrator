@@ -108,6 +108,7 @@ they are the orchestration and governance model.
 | `CassetteLlmClient.replay` | Serves a stored reply; labels it `replay`, `replay-drift` or `fixture`; can raise a simulated outage. |
 | `ModelSettings.fromEnvironment` | Reads key and model names from the environment, treating `<placeholders>` as unset. |
 | `ModelSettings.requireLiveReady` | Fails fast, naming the missing variables, before any live call. |
+| `ThrottledLlmClient.complete` | Caps concurrent model calls per key and waits out rate limits and 5xx with backoff; fails fast when the provider's retry hint exceeds two minutes (quota exhausted). |
 | `ModelSettings.client` | Builds a Gemini `ChatModel` (temperature 0.2, timeout, transport retries) behind the `LlmClient` seam. |
 
 ### Analysis (`agents/analysis`)
@@ -206,6 +207,7 @@ they are the orchestration and governance model.
 | `RateLimitInterceptor.preHandle` | Applies the limiter to `POST /api/v1/links`; throws to produce 429 with `Retry-After`. |
 | `ClientKeyResolver.resolve` | Client key from the remote address, or the first `X-Forwarded-For` hop only when trusted. |
 | `ProblemDetailsAdvice.handle*` | Maps domain errors to RFC 9457 problem responses (400, 404, 409, 410, 429, 500); hides internals. |
+| `ApiContractController.contract` | Serves the checked-in `api/openapi.yaml` as `application/yaml` at `/openapi.yaml`; Swagger UI (`/swagger-ui.html`) renders it. |
 
 ## Tools
 
