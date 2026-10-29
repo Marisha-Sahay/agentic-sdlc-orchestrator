@@ -48,7 +48,7 @@ accept what was validated; one hash-chained event log records all of it.
 
 ## Validation (what was run, and what it showed)
 
-- `mvn verify` (all modules, with Docker): **290 tests pass**, Checkstyle clean, coverage gates met
+- `mvn verify` (all modules, with Docker): **291 tests pass**, Checkstyle clean, coverage gates met
   (core 89.8% line; v1 service 99.6%).
 - **Final service:** 153 unit + 24 PostgreSQL integration tests, 99.3% line coverage; it is
   byte-identical to the code developed and tested for v2.

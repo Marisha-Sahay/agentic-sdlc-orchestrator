@@ -5,7 +5,7 @@ and the service it produces (is the output production quality?). The orchestrato
 also tested by real builds inside every run.
 
 ```bash
-mvn verify                                   # 290 tests, Checkstyle, coverage gates (Docker)
+mvn verify                                   # 291 tests, Checkstyle, coverage gates (Docker)
 ./agentic run drill                          # governance drill (~35 s)
 ./agentic run brownfield --approvals scripted
 tools/final-service.sh && mvn -f target/final-service/pom.xml verify   # final service
@@ -20,7 +20,7 @@ tools/final-service.sh && mvn -f target/final-service/pom.xml verify   # final s
 | Recovery | Resume refuses a tampered log, a modified artifact, a different workflow; recovers only accepted work when cut after a checkpoint, after artifact publication, and after the success event (4 crash points, from a real run's truncated log); budgets carried over or reset with a record | `ResumeTest` | 8 |
 | Core components | Graph validation, policy rules incl. build integrity (7 ways to weaken a gate) and stage scopes, git workspace incl. snapshots, hash-chained log, metrics, command gates and sandboxes, scripted gateway | `orchestrator-core` | 46 |
 | Agent contracts | Each agent in a real engine with a scripted model and git workspace; degraded verification needs a waiver; final validation marks evidence stale after a code repair | `orchestrator-agents` | 52 |
-| CLI and reporting | Templates (evidence order, overlap serialisation), approval-mode resolution (no auto-approve, unknown modes rejected), evidence checker (missing or tampered evidence fails), report and console | `orchestrator-app` | 15 |
+| CLI and reporting | Templates (evidence order, overlap serialisation), approval-mode resolution (no auto-approve, unknown modes rejected), evidence checker (missing or tampered evidence fails, including an exported patch that differs from the accepted artifact), report and console | `orchestrator-app` | 16 |
 | v1 service | Unit 126, Testcontainers ITs 16 | `url-shortener` | 142 |
 | Final service | Unit 153, ITs 24 incl. `ClickAnalyticsIT`, `CachedLinkExpiryIT`, `ContractConformanceIT` | `target/final-service` (CI) | 177 |
 | End to end | Four scenarios through the CLI with real agents, policy, gates, Maven builds; replies are hand-authored fixtures | CI step; `docs/evidence` | 4 runs |

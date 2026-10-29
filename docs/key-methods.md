@@ -173,7 +173,7 @@ they are the orchestration and governance model.
 |---|---|
 | `AgenticCli.main` | Dispatches `run`, `resume`, `stop`, `report`, `verify-log`, `metrics`, `list`, `check-evidence`, `publish-evidence` and `warmup-sandbox`. |
 | `ApprovalModes.resolve` | Chooses the reviewer, failing closed: no terminal and no `--approvals` refuses to start; unknown modes are rejected. |
-| `EvidenceCheck.check` | Verifies saved evidence: chain, artifact hashes, success, release on the validated tree, patch. |
+| `EvidenceCheck.check` | Verifies saved evidence: chain, artifact hashes, success, release on the validated tree, and that the exported `release.patch` is exactly the accepted release artifact. |
 | `AgenticCli.run` | Wires a run: scenario, model mode, workspace, event log, policy, approvals; Ctrl-C triggers a safe stop; writes report and patch. |
 | `AgenticCli.llm` | Builds the cassette-wrapped model client for live, record or replay mode. |
 | `AgenticCli.approvals` | Interactive console reviewer, or a scripted reviewer built from the scenario file. |

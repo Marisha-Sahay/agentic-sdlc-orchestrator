@@ -16,9 +16,13 @@ import java.util.TreeMap;
 /**
  * Checks a saved run's evidence: the audit chain verifies, every persisted artifact matches the
  * hash in the log, the run succeeded, the release was accepted on the tree final validation
- * validated, and the patch is present. Also reports where the model replies came from.
+ * validated, and the exported {@code release.patch} (what {@code tools/final-service.sh} applies)
+ * is exactly the patch artifact the accepted release published. Also reports where the model
+ * replies came from.
  */
 final class EvidenceCheck {
+
+  private static final String RELEASE_PATCH = "release.patch";
 
   private EvidenceCheck() {}
 
@@ -46,9 +50,17 @@ final class EvidenceCheck {
     String finished = null;
     String validatedTree = null;
     String releasedTree = null;
+    String releasedPatchRef = null;
+    Map<String, String> hashByRef = new TreeMap<>();
     for (EventEnvelope envelope : events) {
       switch (envelope.event()) {
-        case RunEvent.ArtifactProduced a -> checkArtifact(dir, a, problems);
+        case RunEvent.ArtifactProduced a -> {
+          checkArtifact(dir, a, problems);
+          hashByRef.put(a.key() + "@v" + a.version() + "#" + a.sha256().substring(0, 12),
+              a.sha256());
+        }
+        case RunEvent.NodeSucceeded s when s.nodeId().equals("release") ->
+            releasedPatchRef = s.outputs().get(RELEASE_PATCH);
         case RunEvent.AgentCalled c -> provenance.merge(c.mode(), 1, Integer::sum);
         case RunEvent.NodeSucceeded s when s.nodeId().equals("final-validation") ->
             validatedTree = s.treeSha();
@@ -68,15 +80,29 @@ final class EvidenceCheck {
     } else if (!validatedTree.equals(releasedTree)) {
       problems.add("release was not accepted on the validated tree " + validatedTree);
     }
-    Path patch = dir.resolve("release.patch");
+    checkExportedPatch(dir, hashByRef.get(releasedPatchRef), releasedPatchRef, problems);
+    return new Result(problems, provenance);
+  }
+
+  /** The exported copy must be byte-for-byte the patch the accepted release published. */
+  private static void checkExportedPatch(Path dir, String acceptedSha, String acceptedRef,
+      List<String> problems) {
+    Path patch = dir.resolve(RELEASE_PATCH);
+    String exported;
     try {
-      if (!Files.isRegularFile(patch) || Files.readString(patch).isBlank()) {
-        problems.add("missing or empty release.patch");
-      }
+      exported = Files.isRegularFile(patch) ? Files.readString(patch, StandardCharsets.UTF_8)
+          : "";
     } catch (IOException e) {
       problems.add("unreadable release.patch: " + e.getMessage());
+      return;
     }
-    return new Result(problems, provenance);
+    if (exported.isBlank()) {
+      problems.add("missing or empty release.patch");
+    } else if (acceptedSha == null) {
+      problems.add("no release.patch artifact published by an accepted release");
+    } else if (!Hashing.sha256(exported).equals(acceptedSha)) {
+      problems.add("exported release.patch differs from the accepted artifact " + acceptedRef);
+    }
   }
 
   private static void checkArtifact(Path dir, RunEvent.ArtifactProduced a,

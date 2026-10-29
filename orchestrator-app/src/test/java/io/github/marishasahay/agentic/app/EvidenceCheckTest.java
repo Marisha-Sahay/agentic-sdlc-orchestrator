@@ -18,11 +18,15 @@ class EvidenceCheckTest {
   @TempDir
   Path tmp;
 
+  private static final String PATCH = "diff --git a/x b/x\n+accepted\n";
+
   private Path evidence(boolean releasedOnValidatedTree) throws Exception {
     Path dir = tmp.resolve("brownfield");
     Files.createDirectories(dir.resolve("artifacts/release.notes"));
+    Files.createDirectories(dir.resolve("artifacts/release.patch"));
     Files.writeString(dir.resolve("artifacts/release.notes/v1.txt"), "notes");
-    Files.writeString(dir.resolve("release.patch"), "diff --git a/x b/x");
+    Files.writeString(dir.resolve("artifacts/release.patch/v1.txt"), PATCH);
+    Files.writeString(dir.resolve("release.patch"), PATCH);
     EventLog log = new EventLog("r", dir.resolve("events.jsonl"), Clock.systemUTC());
     log.append(new RunEvent.RunStarted("brownfield", "sha", 1, Map.of()));
     log.append(new RunEvent.AgentCalled("release", "release-manager", "fixture:hand-authored",
@@ -31,8 +35,13 @@ class EvidenceCheckTest {
         Map.of(), null, "tree-1"));
     log.append(new RunEvent.ArtifactProduced("release.notes", 1, Hashing.sha256("notes"),
         "release", "release.notes/v1.txt"));
+    log.append(new RunEvent.ArtifactProduced("release.patch", 1, Hashing.sha256(PATCH),
+        "release", "release.patch/v1.txt"));
     log.append(new RunEvent.ApprovalResolved("release", true, "demo", "ok", List.of(),
         "ACCEPTANCE", "p", releasedOnValidatedTree ? "tree-1" : "tree-0"));
+    log.append(new RunEvent.NodeSucceeded("release", "RELEASE_READINESS", 1, Map.of(),
+        Map.of("release.patch", "release.patch@v1#" + Hashing.sha256(PATCH).substring(0, 12)),
+        null, "tree-1"));
     log.append(new RunEvent.RunFinished("SUCCEEDED", ""));
     return dir;
   }
@@ -58,5 +67,14 @@ class EvidenceCheckTest {
         "artifact release.notes@v1 does not match its hash",
         "release was not accepted on the validated tree tree-1",
         "missing or empty release.patch");
+  }
+
+  @Test
+  void failsWhenOnlyTheExportedPatchWasChanged() throws Exception {
+    Path dir = evidence(true);
+    Files.writeString(dir.resolve("release.patch"), PATCH + "+smuggled\n");
+
+    assertThat(EvidenceCheck.check(dir).problems()).singleElement().asString()
+        .startsWith("exported release.patch differs from the accepted artifact release.patch@v1");
   }
 }
