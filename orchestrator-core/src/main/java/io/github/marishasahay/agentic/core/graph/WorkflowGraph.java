@@ -1,5 +1,6 @@
 package io.github.marishasahay.agentic.core.graph;
 
+import io.github.marishasahay.agentic.core.util.Hashing;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -166,6 +167,25 @@ public final class WorkflowGraph {
    */
   public List<String> topologicalOrder() {
     return kahn(nodes);
+  }
+
+  /**
+   * Identity of the workflow definition: nodes, stages, dependencies, approvals, retries,
+   * strategies and gates. A run may only be resumed with the workflow it started with.
+   *
+   * @return SHA-256 of a canonical description
+   */
+  public String fingerprint() {
+    StringBuilder canonical = new StringBuilder();
+    for (String id : topologicalOrder()) {
+      NodeSpec n = nodes.get(id);
+      canonical.append(id).append('|').append(n.stage()).append('|').append(n.dependsOn())
+          .append('|').append(n.approval()).append('|').append(n.retry().maxAttempts())
+          .append('|').append(n.fallback() != null).append('|').append(n.expansion() != null)
+          .append('|').append(n.entryGates().stream().map(g -> g.name()).toList())
+          .append('|').append(n.exitGates().stream().map(g -> g.name()).toList()).append('\n');
+    }
+    return Hashing.sha256(canonical.toString());
   }
 
   /**

@@ -46,19 +46,23 @@ class MetricsCalculatorTest {
     log.append(new RunEvent.RunStarted("brownfield", "sha", 3, Map.of()));
     log.append(new RunEvent.NodeStarted("design", "DESIGN", 1, "primary"));
     clock.advance(Duration.ofSeconds(2));
-    log.append(new RunEvent.ApprovalRequested("design", List.of("mandatory")));
+    log.append(new RunEvent.ApprovalRequested("design", List.of("mandatory"), "ACCEPTANCE",
+        List.of("sign-off"), "p", "t"));
     clock.advance(Duration.ofSeconds(30));
-    log.append(new RunEvent.ApprovalResolved("design", true, "alice", "ok", List.of()));
-    log.append(new RunEvent.NodeSucceeded("design", "DESIGN", 1, Map.of(), Map.of()));
+    log.append(new RunEvent.ApprovalResolved("design", true, "alice", "ok", List.of(), "ACCEPTANCE",
+        "p", "t"));
+    log.append(new RunEvent.NodeSucceeded("design", "DESIGN", 1, Map.of(), Map.of(), null, null));
     log.append(new RunEvent.NodeStarted("impl", "IMPLEMENTATION", 1, "primary"));
     log.append(new RunEvent.AgentCalled("impl", "coder", "model-x", "replay", 900, 1000, 200));
     clock.advance(Duration.ofSeconds(4));
-    log.append(new RunEvent.GateEvaluated("impl", 1, "exit", "maven-compile", false, "error"));
+    log.append(new RunEvent.GateEvaluated("impl", 1, "exit", "maven-compile", false, "error",
+        "t1"));
     log.append(new RunEvent.RollbackPerformed("impl", "abc", "gate failed"));
     log.append(new RunEvent.AttemptFailed("impl", 1, "gate-failed", "error"));
     clock.advance(Duration.ofSeconds(6));
     log.append(new RunEvent.NodeStarted("impl", "IMPLEMENTATION", 2, "primary"));
-    log.append(new RunEvent.NodeSucceeded("impl", "IMPLEMENTATION", 2, Map.of(), Map.of()));
+    log.append(new RunEvent.NodeSucceeded("impl", "IMPLEMENTATION", 2, Map.of(), Map.of(), "c2",
+        "t2"));
     log.append(new RunEvent.NodeFailed("docs", "DOCUMENTATION", "model down"));
     log.append(new RunEvent.NodeSkipped("release", "upstream docs"));
     log.append(new RunEvent.RunFinished("FAILED", "docs"));

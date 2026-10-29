@@ -1,5 +1,6 @@
 package io.github.marishasahay.agentic.agents.gates;
 
+import io.github.marishasahay.agentic.agents.ArchitectAgent;
 import io.github.marishasahay.agentic.agents.ArtifactKeys;
 import io.github.marishasahay.agentic.agents.analysis.SourceContext;
 import io.github.marishasahay.agentic.core.gate.Gate;
@@ -7,12 +8,31 @@ import io.github.marishasahay.agentic.core.gate.GateContext;
 import io.github.marishasahay.agentic.core.gate.GateResult;
 import java.util.List;
 
-/** Documentation must mention every path in the API contract. */
+/**
+ * Documentation must mention every path in the API contract: the design's contract while the
+ * docs are written, or the contract file in the workspace at final validation.
+ */
 public final class DocsCoverageGate implements Gate {
+
+  private final boolean workspaceContract;
+
+  public DocsCoverageGate() {
+    this(false);
+  }
+
+  /**
+   * Creates the gate.
+   *
+   * @param workspaceContract read the contract from {@code api/openapi.yaml} in the workspace
+   *     instead of the design artifact
+   */
+  public DocsCoverageGate(boolean workspaceContract) {
+    this.workspaceContract = workspaceContract;
+  }
 
   @Override
   public String name() {
-    return "docs-coverage";
+    return workspaceContract ? "final-docs-coverage" : "docs-coverage";
   }
 
   @Override
@@ -23,7 +43,10 @@ public final class DocsCoverageGate implements Gate {
   @Override
   public GateResult evaluate(GateContext context) {
     String readme = SourceContext.readIfExists(context.workspaceRoot(), "README.md");
-    List<String> missing = OpenApiDocument.parse(context.output(ArtifactKeys.OPENAPI))
+    String contract = workspaceContract
+        ? SourceContext.readIfExists(context.workspaceRoot(), ArchitectAgent.CONTRACT_PATH)
+        : context.output(ArtifactKeys.OPENAPI);
+    List<String> missing = OpenApiDocument.parse(contract)
         .operations().stream().map(OpenApiDocument.Operation::path).distinct()
         .filter(path -> !readme.contains(path)).toList();
     return missing.isEmpty()

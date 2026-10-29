@@ -3,6 +3,7 @@ package io.github.marishasahay.agentic.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.marishasahay.agentic.core.approval.ApprovalDecision;
+import io.github.marishasahay.agentic.core.approval.ApprovalKind;
 import io.github.marishasahay.agentic.core.approval.ApprovalRequest;
 import io.github.marishasahay.agentic.core.event.EventLog;
 import io.github.marishasahay.agentic.core.event.RunEvent;
@@ -22,6 +23,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,28 +36,30 @@ class ReportingTest {
   private static EventLog fullLog() {
     EventLog log = EventLog.inMemory("run-1", Clock.systemUTC());
     log.append(new RunEvent.RunStarted("brownfield", "sha", 3, Map.of("llmMode", "REPLAY")));
-    log.append(new RunEvent.RunResumed(1));
+    log.append(new RunEvent.RunResumed(1, "baseline", List.of(), 0, 0));
     log.append(new RunEvent.NodeStarted("impl-clicks", "IMPLEMENTATION", 1, "primary"));
     log.append(new RunEvent.AgentCalled("impl-clicks", "coder", "model", "replay", 1200, 10, 5));
     log.append(new RunEvent.PolicyEvaluated("impl-clicks", 1, List.of(new PolicyFinding(
         "schema-migration", Severity.REQUIRE_APPROVAL, "new migration", "V2__clicks.sql"))));
     log.append(new RunEvent.GateEvaluated("impl-clicks", 1, "exit", "maven-compile", false,
-        "ClickStore.java:[3] cannot find symbol <T>"));
+        "ClickStore.java:[3] cannot find symbol <T>", "t1"));
     log.append(new RunEvent.RollbackPerformed("impl-clicks", "abcdef1234567890", "gate failed"));
     log.append(new RunEvent.AttemptFailed("impl-clicks", 1, "gate-failed", "cannot find symbol"));
     log.append(new RunEvent.FallbackActivated("impl-clicks", "primary exhausted"));
     log.append(new RunEvent.NodeStarted("impl-clicks", "IMPLEMENTATION", 2, "fallback"));
-    log.append(new RunEvent.GateEvaluated("impl-clicks", 2, "exit", "maven-compile", true, "ok"));
-    log.append(new RunEvent.ApprovalRequested("impl-clicks", List.of("schema change")));
+    log.append(new RunEvent.GateEvaluated("impl-clicks", 2, "exit", "maven-compile", true, "ok",
+        "t2"));
+    log.append(new RunEvent.ApprovalRequested("impl-clicks", List.of("schema change"),
+        "ACCEPTANCE", List.of("schema-migration"), "p", "t2"));
     log.append(new RunEvent.ApprovalResolved("impl-clicks", true, "alice", "ok", List.of(
-        "requirements.spec")));
+        "requirements.spec"), "ACCEPTANCE", "p", "t2"));
     log.append(new RunEvent.CheckpointCreated("impl-clicks", "1234567890abcdef"));
     log.append(new RunEvent.ArtifactProduced("impl.clicks", 1, "a".repeat(64), "impl-clicks",
         "impl.clicks/v1.txt"));
     log.append(new RunEvent.DecisionRecorded("impl-clicks", "Storage", "JdbcClient",
         "matches codebase", List.of("JPA"), List.of("plan.tasks@v1#abc")));
     log.append(new RunEvent.NodeSucceeded("impl-clicks", "IMPLEMENTATION", 2, Map.of(),
-        Map.of()));
+        Map.of(), "1234567890abcdef", "t2"));
     log.append(new RunEvent.GraphExpanded("plan", List.of("impl-clicks"), List.of()));
     log.append(new RunEvent.NodeInvalidated("design", "input 'requirements.spec' changed"));
     log.append(new RunEvent.NodeFailed("docs", "DOCUMENTATION", "gave up"));
@@ -106,17 +110,19 @@ class ReportingTest {
         .contains("model coder").contains("FAIL exit gate maven-compile")
         .contains("rollback to abcdef12").contains("rejected (gate-failed): cannot find symbol")
         .contains("fallback strategy activated").contains("[fallback]")
-        .contains("waiting for human approval").contains("amended [requirements.spec]")
+        .contains("waiting for acceptance: [schema-migration]").contains("amended [requirements.spec]")
         .contains("succeeded (2 attempts)").contains("plan expanded into [impl-clicks]")
         .contains("invalidated").contains("FAILED: gave up").contains("skipped")
         .contains("SAFE STOP").contains("RUN finished: FAILED");
   }
 
   private ApprovalRequest request() {
-    return new ApprovalRequest("run-1", "design", Stage.DESIGN, "adds stats endpoint",
-        List.of("mandatory design sign-off"), List.of(), Map.of("design.doc", "# Design v1"),
+    return new ApprovalRequest("run-1", "design", Stage.DESIGN, ApprovalKind.ACCEPTANCE,
+        "adds stats endpoint", List.of("mandatory design sign-off"), Set.of("sign-off"),
+        List.of(), Map.of("design.doc", "# Design v1"),
         "diff --git a/api/openapi.yaml b/api/openapi.yaml\n+  /stats:",
-        List.of(GateResult.pass("api-compatibility", "backward compatible")));
+        List.of(GateResult.pass("api-compatibility", "backward compatible")),
+        "f".repeat(64), "e".repeat(40), List.of());
   }
 
   private ConsoleApprovalGateway console(String typed, ByteArrayOutputStream out) {

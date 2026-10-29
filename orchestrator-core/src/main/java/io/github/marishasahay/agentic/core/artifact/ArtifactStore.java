@@ -23,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ArtifactStore {
 
   private final Map<String, List<Artifact>> versions = new ConcurrentHashMap<>();
+  private final Map<String, Integer> reserved = new ConcurrentHashMap<>();
   private final Path directory;
 
   /**
@@ -54,10 +55,36 @@ public final class ArtifactStore {
     if (!history.isEmpty() && history.getLast().sha256().equals(hash)) {
       return history.getLast();
     }
-    Artifact artifact = new Artifact(key, history.size() + 1, hash, producedBy, at, content);
-    history.add(artifact);
+    int version = Math.max(history.isEmpty() ? 0 : history.getLast().version(),
+        reserved.getOrDefault(key, 0)) + 1;
+    Artifact artifact = new Artifact(key, version, hash, producedBy, at, content);
     persist(artifact);
+    history.add(artifact);
     return artifact;
+  }
+
+  /**
+   * Withdraws a version that was stored for an attempt which then failed to be accepted, so no
+   * later reader sees it. Its number stays used: the next version gets a fresh one.
+   *
+   * @param artifact version to withdraw
+   */
+  public synchronized void discard(Artifact artifact) {
+    List<Artifact> history = versions.get(artifact.key());
+    if (history != null && history.removeIf(a -> a.version() == artifact.version())) {
+      reserve(artifact.key(), artifact.version());
+    }
+  }
+
+  /**
+   * Marks a version number as used without making it readable (resume path: a version that was
+   * persisted by an attempt that was never accepted).
+   *
+   * @param key artifact key
+   * @param version version number to skip
+   */
+  public synchronized void reserve(String key, int version) {
+    reserved.merge(key, version, Math::max);
   }
 
   /**

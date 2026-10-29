@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.marishasahay.agentic.core.engine.NodeResult;
 import io.github.marishasahay.agentic.core.graph.NodeSpec;
 import io.github.marishasahay.agentic.core.graph.Stage;
+import io.github.marishasahay.agentic.core.policy.rules.BuildIntegrityRule;
 import io.github.marishasahay.agentic.core.policy.rules.ChangeSizeRule;
 import io.github.marishasahay.agentic.core.policy.rules.SchemaMigrationRule;
 import io.github.marishasahay.agentic.core.policy.rules.SecretLeakRule;
 import io.github.marishasahay.agentic.core.policy.rules.SensitiveFileRule;
+import io.github.marishasahay.agentic.core.policy.rules.StageWriteScopeRule;
 import io.github.marishasahay.agentic.core.policy.rules.WorkspaceScopeRule;
 import io.github.marishasahay.agentic.core.workspace.ChangeSet;
 import io.github.marishasahay.agentic.core.workspace.FileChange;
@@ -135,5 +137,98 @@ class PolicyRulesTest {
 
     assertThat(PolicyEngine.blocks(findings)).isTrue();
     assertThat(findings.getFirst().message()).contains("fail-closed");
+  }
+
+  private static final String POM = """
+      <project>
+        <properties>
+          <java.version>21</java.version>
+          <jacoco.line.coverage>0.80</jacoco.line.coverage>
+          <skipITs>false</skipITs>
+        </properties>
+        <dependencies>
+          <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId>
+          </dependency>
+        </dependencies>
+        <build>
+          <plugins>
+            <plugin>
+              <artifactId>maven-checkstyle-plugin</artifactId>
+              <configuration><failOnViolation>true</failOnViolation></configuration>
+            </plugin>
+            <plugin>
+              <artifactId>jacoco-maven-plugin</artifactId>
+              <configuration><skip>${skipITs}</skip></configuration>
+            </plugin>
+          </plugins>
+        </build>
+      </project>
+      """;
+
+  @ParameterizedTest(name = "{0}")
+  @CsvSource(delimiter = '|', value = {
+      "lower the coverage threshold | <jacoco.line.coverage>0.80 | <jacoco.line.coverage>0.10",
+      "skip integration tests by default | <skipITs>false | <skipITs>true",
+      "add a skip property | <java.version>21</java.version> | "
+          + "<java.version>21</java.version><skipTests>true</skipTests>",
+      "make Checkstyle advisory | <failOnViolation>true | <failOnViolation>false",
+      "skip the coverage gate | <skip>${skipITs} | <skip>true",
+      "move tests out of reach | <build> | <build><testSourceDirectory>none</testSourceDirectory>",
+      "skip tests from a profile | </project> | <profiles><profile><id>x</id><properties>"
+          + "<maven.test.skip>true</maven.test.skip></properties></profile></profiles></project>"})
+  void buildFileValidationControlsCannotBeWeakened(String what, String from, String to)
+      throws Exception {
+    Files.writeString(workspace.resolve("pom.xml"), POM);
+    String weakened = POM.replace(from, to);
+
+    List<PolicyFinding> findings = new BuildIntegrityRule()
+        .evaluate(input(FileChange.write("pom.xml", weakened)));
+
+    assertThat(weakened).as(what).isNotEqualTo(POM);
+    assertThat(findings).as(what).singleElement().satisfies(f -> {
+      assertThat(f.severity()).isEqualTo(Severity.BLOCK);
+      assertThat(f.message()).contains("validation controls");
+    });
+  }
+
+  @Test
+  void authorizedDependencyChangesDoNotTouchTheValidationControls() throws Exception {
+    Files.writeString(workspace.resolve("pom.xml"), POM);
+    String withDependency = POM.replace("</dependencies>", "  <dependency><groupId>com.example"
+        + "</groupId><artifactId>lib</artifactId></dependency>\n    </dependencies>");
+    PolicyEngine engine = new PolicyEngine(List.of(new BuildIntegrityRule(),
+        SensitiveFileRule.dependencies()));
+
+    List<PolicyFinding> findings = engine.evaluate(input(FileChange.write("pom.xml",
+        withDependency)));
+
+    assertThat(findings).singleElement().satisfies(f -> {
+      assertThat(f.rule()).isEqualTo("dependency-change");
+      assertThat(f.severity()).isEqualTo(Severity.REQUIRE_AUTHORIZATION);
+    });
+    assertThat(new BuildIntegrityRule().evaluate(input(FileChange.delete("pom.xml"))))
+        .singleElement().extracting(PolicyFinding::severity).isEqualTo(Severity.BLOCK);
+  }
+
+  @Test
+  void eachStageMayOnlyWriteItsOwnFiles() {
+    StageWriteScopeRule rule = new StageWriteScopeRule(Map.of(
+        Stage.DOCUMENTATION, List.of("README.md", "docs/**"),
+        Stage.TESTING, List.of("src/test/**")));
+    NodeSpec docs = NodeSpec.builder("docs", Stage.DOCUMENTATION)
+        .task(ctx -> NodeResult.builder().build()).build();
+    NodeSpec release = NodeSpec.builder("release", Stage.RELEASE_READINESS)
+        .task(ctx -> NodeResult.builder().build()).build();
+
+    assertThat(rule.evaluate(new PolicyInput(docs, ChangeSet.of(
+        FileChange.write("README.md", "x"), FileChange.write("docs/a.md", "y")), Map.of(),
+        workspace))).isEmpty();
+    assertThat(rule.evaluate(new PolicyInput(docs, ChangeSet.of(
+        FileChange.write("src/main/java/App.java", "x")), Map.of(), workspace)))
+        .singleElement().extracting(PolicyFinding::severity).isEqualTo(Severity.BLOCK);
+    assertThat(rule.evaluate(new PolicyInput(release, ChangeSet.of(
+        FileChange.write("README.md", "x")), Map.of(), workspace)))
+        .singleElement().extracting(PolicyFinding::message).asString()
+        .contains("release readiness nodes may only write []");
   }
 }

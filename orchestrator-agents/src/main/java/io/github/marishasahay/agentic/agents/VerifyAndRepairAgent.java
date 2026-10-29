@@ -25,10 +25,24 @@ public final class VerifyAndRepairAgent implements NodeTask {
 
   private final AgentSupport llm;
   private final String conventions;
+  private final String profile;
 
   public VerifyAndRepairAgent(AgentSupport llm, String conventions) {
+    this(llm, conventions, "FULL: unit and integration tests, Checkstyle, coverage gate");
+  }
+
+  /**
+   * Creates the agent.
+   *
+   * @param llm model access
+   * @param conventions coding standards
+   * @param profile what the build gate actually verifies in this environment; reports never
+   *     claim more than this
+   */
+  public VerifyAndRepairAgent(AgentSupport llm, String conventions, String profile) {
     this.llm = llm;
     this.conventions = conventions;
+    this.profile = profile;
   }
 
   @Override
@@ -36,9 +50,9 @@ public final class VerifyAndRepairAgent implements NodeTask {
     String changed = ctx.input(ArtifactKeys.CHANGED_FILES);
     if (!ctx.isRetry()) {
       return NodeResult.builder()
-          .output(ArtifactKeys.VERIFICATION, "Full build (unit + integration tests, Checkstyle, "
-              + "coverage gate) passed on first run.")
-          .summary("Running full verification")
+          .output(ArtifactKeys.VERIFICATION, "Build gate passed on the first run without "
+              + "repair. Verification profile: " + profile + ".")
+          .summary("Running the build gate (" + profile + ")")
           .build();
     }
     CodeProposal fix = llm.ask(ctx, "build-fixer", SYSTEM,
@@ -49,8 +63,8 @@ public final class VerifyAndRepairAgent implements NodeTask {
         CodeProposal.class);
     return NodeResult.builder()
         .changes(fix.toChanges())
-        .output(ArtifactKeys.VERIFICATION, "Full build passed after automated repair (attempt "
-            + ctx.attempt() + "): " + fix.summary())
+        .output(ArtifactKeys.VERIFICATION, "Build gate passed after automated repair (attempt "
+            + ctx.attempt() + "): " + fix.summary() + " Verification profile: " + profile + ".")
         .summary(fix.summary())
         .build();
   }

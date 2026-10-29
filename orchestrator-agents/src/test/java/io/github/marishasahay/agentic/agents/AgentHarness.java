@@ -3,6 +3,7 @@ package io.github.marishasahay.agentic.agents;
 import io.github.marishasahay.agentic.agents.llm.LlmCall;
 import io.github.marishasahay.agentic.agents.llm.LlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmReply;
+import io.github.marishasahay.agentic.core.approval.ApprovalGateway;
 import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway;
 import io.github.marishasahay.agentic.core.artifact.ArtifactStore;
 import io.github.marishasahay.agentic.core.engine.NodeResult;
@@ -77,6 +78,11 @@ final class AgentHarness implements LlmClient {
   }
 
   RunOutcome run(NodeTask agent, Map<String, String> inputs, Gate... exitGates) {
+    return run(ScriptedApprovalGateway.approveAll(), agent, inputs, exitGates);
+  }
+
+  RunOutcome run(ApprovalGateway approvals, NodeTask agent, Map<String, String> inputs,
+      Gate... exitGates) {
     NodeSpec.Builder node = NodeSpec.builder("agent", Stage.IMPLEMENTATION)
         .dependsOn("seed").task(agent)
         .retry(new RetryPolicy(3, Duration.ofMillis(1), 1.0, Duration.ofMillis(1)));
@@ -90,7 +96,7 @@ final class AgentHarness implements LlmClient {
           return result.build();
         }).build();
     return WorkflowEngine.builder().events(log).artifacts(artifacts).workspace(workspace)
-        .approvals(ScriptedApprovalGateway.approveAll()).build()
+        .approvals(approvals).build()
         .run(WorkflowGraph.of(List.of(seed, node.build())), "agent-test", "req");
   }
 

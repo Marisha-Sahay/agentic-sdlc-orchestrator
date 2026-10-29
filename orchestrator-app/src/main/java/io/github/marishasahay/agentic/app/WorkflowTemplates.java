@@ -7,6 +7,7 @@ import io.github.marishasahay.agentic.agents.ClarificationTask;
 import io.github.marishasahay.agentic.agents.CodebaseScanTask;
 import io.github.marishasahay.agentic.agents.CoderAgent;
 import io.github.marishasahay.agentic.agents.DocsAgent;
+import io.github.marishasahay.agentic.agents.FinalValidationTask;
 import io.github.marishasahay.agentic.agents.ImpactAnalysisAgent;
 import io.github.marishasahay.agentic.agents.IntegrationTask;
 import io.github.marishasahay.agentic.agents.PlannerAgent;
@@ -20,13 +21,17 @@ import io.github.marishasahay.agentic.agents.VerifyAndRepairAgent;
 import io.github.marishasahay.agentic.agents.contract.RequirementSpec;
 import io.github.marishasahay.agentic.agents.contract.SecurityReview;
 import io.github.marishasahay.agentic.agents.contract.TaskPlan;
+import io.github.marishasahay.agentic.agents.contract.ValidationEvidence;
 import io.github.marishasahay.agentic.agents.gates.ApiCompatibilityGate;
 import io.github.marishasahay.agentic.agents.gates.ContractGate;
 import io.github.marishasahay.agentic.agents.gates.DocsCoverageGate;
 import io.github.marishasahay.agentic.agents.gates.ImpactGroundingGate;
+import io.github.marishasahay.agentic.agents.gates.SecurityScanGate;
+import io.github.marishasahay.agentic.agents.gates.ValidatedTreeGate;
 import io.github.marishasahay.agentic.agents.gates.Validators;
 import io.github.marishasahay.agentic.core.engine.NodeResult;
 import io.github.marishasahay.agentic.core.gate.CommandGate;
+import io.github.marishasahay.agentic.core.gate.CommandSandbox;
 import io.github.marishasahay.agentic.core.gate.RequiredArtifactsGate;
 import io.github.marishasahay.agentic.core.graph.ApprovalMode;
 import io.github.marishasahay.agentic.core.graph.GraphExpansion;
@@ -36,7 +41,11 @@ import io.github.marishasahay.agentic.core.graph.Stage;
 import io.github.marishasahay.agentic.core.graph.WorkflowGraph;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * The SDLC workflow as a graph. One template covers all three scenarios; the scenario kind only
@@ -46,15 +55,23 @@ import java.util.List;
  * intake -+-> requirements --------------------------+
  *         |   (ambiguous: draft -> clarify* -> refine)|
  *         +-> codebase-scan (brownfield/ambiguous) ---+-> impact-analysis -> design* -> plan
- * plan ==expands==> impl-&lt;task&gt;... -> integrate -+-> tests ----------+
- *                                               +-> docs -----------+-> verify -> release*
- *                                               +-> security-review +
+ * plan ==expands==> impl-&lt;task&gt;... -> integrate -+-> tests -> verify -> security-review -+
+ *                                               +-> docs ------------------------------+
+ *                                                    -> final-validation -> release*
  * (* = human approval checkpoint)
  * </pre>
+ *
+ * <p>Order matters for evidence: {@code verify} is the last stage that may change code (its
+ * bounded repair), the security review reads the repaired code, documentation may only change
+ * documentation (stage write scopes), and {@code final-validation} re-runs every deterministic
+ * check on the one tree that release readiness is then bound to.
  */
 public final class WorkflowTemplates {
 
   static final int MAX_TASKS = 8;
+  /** Files that may change after a review without invalidating it. */
+  static final List<String> DOCUMENTATION = List.of("README.md", "CHANGELOG.md", "API.md",
+      "docs/**");
   private static final RetryPolicy AGENT_RETRY = new RetryPolicy(3, Duration.ofSeconds(1), 2.0,
       Duration.ofSeconds(8));
 
@@ -180,6 +197,21 @@ public final class WorkflowTemplates {
         .fallback(new TestAuthorAgent(fallback, conventions))
         .exitGate(build.unitTests())
         .build());
+    nodes.add(NodeSpec.builder("verify", Stage.VERIFICATION)
+        .description("Full build: tests, integration tests, Checkstyle, coverage (self-repair)")
+        .dependsOn("tests")
+        .retry(new RetryPolicy(3, Duration.ofSeconds(1), 1.0, Duration.ofSeconds(1)))
+        .timeout(Duration.ofMinutes(20))
+        .task(new VerifyAndRepairAgent(primary, conventions, build.profile()))
+        .exitGate(build.fullVerify())
+        .build());
+    nodes.add(NodeSpec.builder("security-review", Stage.SECURITY_REVIEW)
+        .description("Deterministic scanner plus model review of the final code")
+        .dependsOn("verify").retry(AGENT_RETRY)
+        .task(new SecurityReviewAgent(primary))
+        .exitGate(new ContractGate<>("security-gate", ArtifactKeys.SECURITY,
+            SecurityReview.class, Validators.security()))
+        .build());
     nodes.add(NodeSpec.builder("docs", Stage.DOCUMENTATION)
         .description("README and changelog")
         .dependsOn("integrate").retry(RetryPolicy.attempts(2))
@@ -187,28 +219,31 @@ public final class WorkflowTemplates {
         .fallback(new TemplateDocsWriter())
         .exitGate(new DocsCoverageGate())
         .build());
-    nodes.add(NodeSpec.builder("security-review", Stage.SECURITY_REVIEW)
-        .description("Deterministic scanner plus model review of the diff")
-        .dependsOn("integrate").retry(AGENT_RETRY)
-        .task(new SecurityReviewAgent(primary))
-        .exitGate(new ContractGate<>("security-gate", ArtifactKeys.SECURITY,
-            SecurityReview.class, Validators.security()))
-        .build());
 
-    nodes.add(NodeSpec.builder("verify", Stage.VERIFICATION)
-        .description("Full build: tests, integration tests, Checkstyle, coverage (self-repair)")
-        .dependsOn("tests", "docs", "security-review")
-        .retry(new RetryPolicy(3, Duration.ofSeconds(1), 1.0, Duration.ofSeconds(1)))
+    CommandGate finalBuild = build.fullVerify();
+    nodes.add(NodeSpec.builder("final-validation", Stage.VERIFICATION)
+        .description("Every deterministic check, once, on the exact tree to be released")
+        .dependsOn("security-review", "docs").retry(RetryPolicy.none())
         .timeout(Duration.ofMinutes(20))
-        .task(new VerifyAndRepairAgent(primary, conventions))
-        .exitGate(build.fullVerify())
+        .task(new FinalValidationTask(build.dockerAvailable() ? "FULL" : "DEGRADED",
+            List.of(finalBuild.name(), "security-scan", "final-api-compatibility",
+                "final-docs-coverage"), build.skippedChecks(), build.sandbox().describe(),
+            Map.of("security-review", DOCUMENTATION)))
+        .exitGate(new ContractGate<>("evidence-freshness", ArtifactKeys.VALIDATION,
+            ValidationEvidence.class, ValidationEvidence::staleEvidence))
+        .exitGate(finalBuild)
+        .exitGate(new SecurityScanGate())
+        .exitGate(new ApiCompatibilityGate(baselineContract,
+            ApiCompatibilityGate.Source.WORKSPACE_FILE))
+        .exitGate(new DocsCoverageGate(true))
         .build());
 
     nodes.add(NodeSpec.builder("release", Stage.RELEASE_READINESS)
-        .description("Patch, traceability, release notes; human sign-off")
-        .dependsOn("verify").retry(AGENT_RETRY)
+        .description("Patch, traceability, release notes; human sign-off on the validated tree")
+        .dependsOn("final-validation").retry(AGENT_RETRY)
         .approval(ApprovalMode.ALWAYS)
-        .task(new ReleaseAgent(primary))
+        .entryGate(new ValidatedTreeGate())
+        .task(new ReleaseAgent(primary, "final-validation"))
         .exitGate(RequiredArtifactsGate.of(ArtifactKeys.RELEASE_PATCH,
             ArtifactKeys.RELEASE_NOTES, ArtifactKeys.TRACEABILITY))
         .build());
@@ -218,11 +253,11 @@ public final class WorkflowTemplates {
   private GraphExpansion implementationTasks() {
     return artifacts -> {
       TaskPlan plan = AgentSupport.parse(artifacts.content(ArtifactKeys.PLAN), TaskPlan.class);
+      Map<String, List<String>> dependencies = serializeOverlaps(AgentSupport.list(plan.tasks()));
       return AgentSupport.list(plan.tasks()).stream()
           .map(task -> NodeSpec.builder("impl-" + task.id(), Stage.IMPLEMENTATION)
               .description(task.title())
-              .dependsOn(AgentSupport.list(task.dependsOn()).stream().map(d -> "impl-" + d)
-                  .toList())
+              .dependsOn(dependencies.get(task.id()).stream().map(d -> "impl-" + d).toList())
               .retry(AGENT_RETRY).timeout(Duration.ofMinutes(10))
               .task(new CoderAgent(primary, task.id(), conventions))
               .fallback(new CoderAgent(fallback, task.id(), conventions))
@@ -233,34 +268,86 @@ public final class WorkflowTemplates {
   }
 
   /**
-   * Build commands for gates. Integration tests need Docker; when it is absent the full
-   * verification degrades to unit tests and the degradation is recorded in the audit log.
+   * Tasks the planner left independent but that write the same file are serialised (earlier in
+   * plan order first), so they never race; disjoint tasks stay parallel. Stale proposals are
+   * still caught at apply time; this just avoids producing them.
    *
-   * @param dockerAvailable whether Testcontainers can run
+   * @param tasks tasks in plan order (the plan gate guarantees declared dependencies are acyclic)
+   * @return task id to its dependencies, declared plus serialising ones
    */
-  public record BuildCommands(boolean dockerAvailable) {
+  static Map<String, List<String>> serializeOverlaps(List<TaskPlan.PlannedTask> tasks) {
+    Map<String, List<String>> deps = new LinkedHashMap<>();
+    for (TaskPlan.PlannedTask task : tasks) {
+      deps.put(task.id(), new ArrayList<>(AgentSupport.list(task.dependsOn())));
+    }
+    for (int j = 0; j < tasks.size(); j++) {
+      for (int i = 0; i < j; i++) {
+        TaskPlan.PlannedTask earlier = tasks.get(i);
+        TaskPlan.PlannedTask later = tasks.get(j);
+        Set<String> shared = new HashSet<>(AgentSupport.list(earlier.files()));
+        shared.retainAll(AgentSupport.list(later.files()));
+        if (!shared.isEmpty() && !reaches(deps, earlier.id(), later.id())
+            && !reaches(deps, later.id(), earlier.id())) {
+          deps.get(later.id()).add(earlier.id());
+        }
+      }
+    }
+    return deps;
+  }
+
+  /** Whether {@code from} (transitively) depends on {@code to}. */
+  private static boolean reaches(Map<String, List<String>> deps, String from, String to) {
+    for (String dep : deps.getOrDefault(from, List.of())) {
+      if (dep.equals(to) || reaches(deps, dep, to)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Build commands for gates, and where they execute. Integration tests need a database: with
+   * Docker available they run (Testcontainers on the host, or a sidecar inside the Docker
+   * sandbox); without it the build degrades to unit tests, final validation records the
+   * profile as DEGRADED and release requires an explicit waiver.
+   *
+   * @param dockerAvailable whether integration tests can run
+   * @param sandbox where build and test commands execute
+   */
+  public record BuildCommands(boolean dockerAvailable, CommandSandbox sandbox) {
+
+    public BuildCommands(boolean dockerAvailable) {
+      this(dockerAvailable, CommandSandbox.host());
+    }
 
     CommandGate compile() {
       return CommandGate.of("maven-compile", Duration.ofMinutes(5),
-          "mvn", "-q", "-B", "-ntp", "compile");
+          "mvn", "-q", "-B", "-ntp", "compile").in(sandbox);
     }
 
     CommandGate unitTests() {
       return CommandGate.of("maven-unit-tests", Duration.ofMinutes(10),
-          "mvn", "-q", "-B", "-ntp", "test");
+          "mvn", "-q", "-B", "-ntp", "test").in(sandbox);
     }
 
     CommandGate fullVerify() {
-      return dockerAvailable
+      return (dockerAvailable
           ? CommandGate.of("maven-verify", Duration.ofMinutes(15), "mvn", "-q", "-B", "-ntp",
               "verify")
-          : CommandGate.of("maven-verify-no-its", Duration.ofMinutes(15), "mvn", "-q", "-B",
-              "-ntp", "-DskipITs", "verify");
+          : CommandGate.of("maven-verify-DEGRADED-no-integration-tests", Duration.ofMinutes(15),
+              "mvn", "-q", "-B", "-ntp", "-DskipITs", "verify")).in(sandbox);
+    }
+
+    List<String> skippedChecks() {
+      return dockerAvailable ? List.of()
+          : List.of("integration tests (Docker unavailable)", "coverage gate (defined on unit + "
+              + "integration coverage)");
     }
 
     public String profile() {
-      return dockerAvailable ? "full (unit + Testcontainers ITs)"
-          : "DEGRADED: integration tests skipped (Docker unavailable)";
+      return dockerAvailable ? "FULL: unit and integration tests, Checkstyle, coverage gate"
+          : "DEGRADED: unit tests and Checkstyle only; integration tests and the coverage gate "
+              + "were skipped (Docker unavailable)";
     }
   }
 }

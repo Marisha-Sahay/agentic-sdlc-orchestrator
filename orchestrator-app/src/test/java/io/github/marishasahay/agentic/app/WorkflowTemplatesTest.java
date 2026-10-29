@@ -8,6 +8,9 @@ import io.github.marishasahay.agentic.core.graph.NodeSpec;
 import io.github.marishasahay.agentic.core.graph.WorkflowGraph;
 import java.nio.file.Path;
 import java.util.List;
+import io.github.marishasahay.agentic.agents.contract.TaskPlan;
+import io.github.marishasahay.agentic.core.graph.Stage;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class WorkflowTemplatesTest {
@@ -35,8 +38,46 @@ class WorkflowTemplatesTest {
     assertThat(graph.node("impact-analysis").dependsOn())
         .containsExactlyInAnyOrder("requirements", "codebase-scan");
     assertThat(graph.node("design").dependsOn()).containsExactly("impact-analysis");
-    assertThat(graph.node("verify").dependsOn())
-        .containsExactlyInAnyOrder("tests", "docs", "security-review");
+    assertThat(graph.node("verify").dependsOn()).containsExactly("tests");
+  }
+
+  @Test
+  void evidenceIsProducedInAnOrderThatCoversTheReleasedTree() {
+    WorkflowGraph graph = graph("brownfield");
+
+    assertThat(graph.node("security-review").dependsOn()).containsExactly("verify");
+    assertThat(graph.node("docs").dependsOn()).containsExactly("integrate");
+    assertThat(graph.node("final-validation").dependsOn())
+        .containsExactlyInAnyOrder("security-review", "docs");
+    assertThat(graph.node("final-validation").exitGates()).extracting(g -> g.name())
+        .containsExactly("evidence-freshness", "maven-verify-DEGRADED-no-integration-tests",
+            "security-scan", "final-api-compatibility", "final-docs-coverage");
+    assertThat(graph.node("release").dependsOn()).containsExactly("final-validation");
+    assertThat(graph.node("release").entryGates()).extracting(g -> g.name())
+        .containsExactly("validated-tree");
+    assertThat(GovernancePolicy.STAGE_SCOPES.get(Stage.DOCUMENTATION))
+        .noneMatch(glob -> glob.startsWith("src/"));
+    assertThat(GovernancePolicy.STAGE_SCOPES).doesNotContainKeys(Stage.SECURITY_REVIEW,
+        Stage.RELEASE_READINESS);
+  }
+
+  @Test
+  void independentTasksThatWriteTheSameFileAreSerialisedAndOthersStayParallel() {
+    TaskPlan.PlannedTask a = task("a", List.of(), "src/main/A.java", "src/main/Shared.java");
+    TaskPlan.PlannedTask b = task("b", List.of(), "src/main/B.java");
+    TaskPlan.PlannedTask c = task("c", List.of(), "src/main/Shared.java");
+    TaskPlan.PlannedTask d = task("d", List.of("a"), "src/main/Shared.java");
+
+    Map<String, List<String>> deps = WorkflowTemplates.serializeOverlaps(List.of(a, b, c, d));
+
+    assertThat(deps.get("b")).isEmpty();
+    assertThat(deps.get("c")).containsExactly("a");
+    assertThat(deps.get("d")).containsExactly("a", "c");
+  }
+
+  private static TaskPlan.PlannedTask task(String id, List<String> deps, String... files) {
+    return new TaskPlan.PlannedTask(id, id, id, List.of("FR-1"), List.of(files), deps,
+        List.of("compiles"));
   }
 
   @Test
@@ -83,6 +124,10 @@ class WorkflowTemplatesTest {
         .satisfies(d -> assertThat(d.approve()).isFalse());
     assertThat(ambiguous.scriptedApprovals().get("clarify").getFirst().amendments())
         .containsKey("clarification.answers");
+    assertThat(brownfield.scriptedApprovals().get("design")).allSatisfy(d -> {
+      assertThat(d.kind()).isEqualTo("acceptance");
+      assertThat(d.covers()).contains("sign-off");
+    });
     assertThat(brownfield.startsFromExistingCode()).isTrue();
     assertThat(brownfield.approvals()).isNull();
     assertThat(Scenario.load(SCENARIOS.resolve("drill.yaml")).approvals()).isEqualTo("scripted");

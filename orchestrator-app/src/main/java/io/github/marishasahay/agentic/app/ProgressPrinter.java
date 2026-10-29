@@ -41,8 +41,8 @@ final class ProgressPrinter implements Consumer<EventEnvelope> {
           + " fallback strategy activated");
       case RunEvent.RollbackPerformed e -> Ansi.yellow("    rollback to "
           + e.toCheckpoint().substring(0, 8) + " (" + e.reason() + ")");
-      case RunEvent.ApprovalRequested e -> Ansi.yellow("  ? " + pad(e.nodeId())
-          + " waiting for human approval: " + e.reasons());
+      case RunEvent.ApprovalRequested e -> Ansi.yellow("  ? " + pad(e.nodeId()) + " waiting for "
+          + e.kind().toLowerCase() + ": " + e.reasonCodes());
       case RunEvent.ApprovalResolved e -> (e.approved() ? Ansi.green("    approved")
           : Ansi.red("    rejected")) + " by " + e.reviewer()
           + (e.amendedArtifacts().isEmpty() ? "" : ", amended " + e.amendedArtifacts());
@@ -58,6 +58,12 @@ final class ProgressPrinter implements Consumer<EventEnvelope> {
           + " invalidated: " + e.cause());
       case RunEvent.GraphExpanded e -> Ansi.blue("  * plan expanded into " + e.added()
           + (e.removed().isEmpty() ? "" : " (replacing " + e.removed() + ")"));
+      case RunEvent.AttemptDiscarded e -> Ansi.magenta("  ^ " + pad(e.nodeId()) + " attempt "
+          + e.attempt() + " discarded: " + e.reason());
+      case RunEvent.AmendmentRejected e -> Ansi.red("    amendment refused: " + e.problems());
+      case RunEvent.RollbackFailed e -> Ansi.bold(Ansi.red("    ROLLBACK FAILED: "
+          + e.rollbackError()));
+      case RunEvent.BudgetReset e -> Ansi.yellow("BUDGETS RESET by " + e.authorizedBy());
       case RunEvent.StopRequested e -> Ansi.bold(Ansi.red("SAFE STOP: " + e.reason()));
       case RunEvent.RunFinished e -> Ansi.bold("RUN finished: " + e.status()
           + (e.reason().isBlank() ? "" : " (" + e.reason() + ")"));

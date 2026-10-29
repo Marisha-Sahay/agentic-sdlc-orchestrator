@@ -42,13 +42,23 @@ public record Scenario(
   }
 
   /**
-   * One scripted reviewer decision.
+   * One scripted (demonstration) reviewer decision. It only answers a request of its kind whose
+   * reasons it covers; anything it does not cover pauses the run instead of being approved.
    *
    * @param approve approve or reject
    * @param comment reviewer rationale
    * @param amendments artifact key to replacement content
+   * @param kind {@code acceptance} (default) or {@code authorization}
+   * @param covers reason codes it decides (default: the mandatory {@code sign-off} only)
    */
-  public record ScriptedDecision(boolean approve, String comment, Map<String, String> amendments) {}
+  public record ScriptedDecision(boolean approve, String comment, Map<String, String> amendments,
+      String kind, List<String> covers) {
+
+    public ScriptedDecision {
+      kind = kind == null ? "acceptance" : kind;
+      covers = covers == null ? List.of("sign-off") : List.copyOf(covers);
+    }
+  }
 
   public Scenario {
     scriptedApprovals = scriptedApprovals == null ? Map.of() : Map.copyOf(scriptedApprovals);

@@ -2,8 +2,9 @@ package io.github.marishasahay.shortener;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -15,11 +16,32 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @AutoConfigureMockMvc
 public abstract class IntegrationTestSupport {
 
-  @ServiceConnection
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+  /**
+   * Set by a sandboxed build gate, which has no Docker inside: use the database it provides
+   * instead of starting a container.
+   */
+  private static final String EXTERNAL_DATABASE = System.getenv("IT_DATABASE_URL");
+
+  static final PostgreSQLContainer POSTGRES =
+      EXTERNAL_DATABASE == null ? new PostgreSQLContainer("postgres:17-alpine") : null;
 
   static {
-    POSTGRES.start();
+    if (POSTGRES != null) {
+      POSTGRES.start();
+    }
+  }
+
+  @DynamicPropertySource
+  static void database(DynamicPropertyRegistry registry) {
+    if (POSTGRES == null) {
+      registry.add("spring.datasource.url", () -> EXTERNAL_DATABASE);
+      registry.add("spring.datasource.username", () -> System.getenv("IT_DATABASE_USER"));
+      registry.add("spring.datasource.password", () -> System.getenv("IT_DATABASE_PASSWORD"));
+    } else {
+      registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+      registry.add("spring.datasource.username", POSTGRES::getUsername);
+      registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
   }
 
   @Autowired

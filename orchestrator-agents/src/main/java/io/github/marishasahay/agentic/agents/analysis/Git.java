@@ -38,6 +38,30 @@ public final class Git {
     return run(root, "diff", BASELINE, "HEAD");
   }
 
+  /**
+   * Tree hash of a revision.
+   *
+   * @param root workspace or snapshot root
+   * @param revision revision (e.g. {@code HEAD})
+   * @return tree hash
+   */
+  public static String tree(Path root, String revision) {
+    return run(root, "rev-parse", revision + "^{tree}").trim();
+  }
+
+  /**
+   * Files that differ between two trees or revisions.
+   *
+   * @param root workspace or snapshot root
+   * @param from older tree or revision
+   * @param to newer tree or revision
+   * @return workspace-relative paths
+   */
+  public static List<String> changedBetween(Path root, String from, String to) {
+    String out = run(root, "diff", "--name-only", from, to);
+    return out.isBlank() ? List.of() : Arrays.asList(out.strip().split("\n"));
+  }
+
   private static String run(Path root, String... args) {
     List<String> command = new ArrayList<>(List.of("git", "-C", root.toString()));
     command.addAll(List.of(args));

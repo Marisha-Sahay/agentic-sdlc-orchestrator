@@ -14,6 +14,10 @@ import io.github.marishasahay.agentic.agents.contract.TaskPlan;
 import io.github.marishasahay.agentic.agents.gates.ContractGate;
 import io.github.marishasahay.agentic.agents.gates.DocsCoverageGate;
 import io.github.marishasahay.agentic.agents.gates.Validators;
+import io.github.marishasahay.agentic.agents.contract.ValidationEvidence;
+import io.github.marishasahay.agentic.core.approval.ApprovalDecision;
+import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway;
+import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway.ScriptedDecision;
 import io.github.marishasahay.agentic.core.engine.RunOutcome;
 import io.github.marishasahay.agentic.core.engine.RunStatus;
 import io.github.marishasahay.agentic.core.event.EventEnvelope;
@@ -290,17 +294,59 @@ class AgentsTest {
     h.workspace.apply(ChangeSet.of(FileChange.write("src/main/java/app/ClickStore.java", "x")));
     h.workspace.checkpoint("impl");
 
-    RunOutcome outcome = h.run(new ReleaseAgent(h.llm()), Map.of(
-        ArtifactKeys.REQUIREMENTS, AgentSupport.pretty(SPEC), ArtifactKeys.PLAN,
-        AgentSupport.pretty(PLAN), ArtifactKeys.CHANGED_FILES, "src/main/java/app/ClickStore.java",
-        ArtifactKeys.SECURITY, "{}", ArtifactKeys.VERIFICATION, "green",
-        ArtifactKeys.TEST_REPORT, "tests", ArtifactKeys.DOCS_SUMMARY, "docs"));
+    RunOutcome outcome = h.run(new ReleaseAgent(h.llm()), releaseInputs("FULL", List.of()));
 
     assertThat(outcome.status()).isEqualTo(RunStatus.SUCCEEDED);
+    assertThat(h.artifacts.content(ArtifactKeys.RELEASE_NOTES))
+        .contains("## Validation evidence").contains("Verification: **FULL**")
+        .contains("Validated tree: `" + "a".repeat(40) + "`");
     assertThat(h.artifacts.content(ArtifactKeys.RELEASE_PATCH)).contains("+x");
     assertThat(h.artifacts.content(ArtifactKeys.TRACEABILITY)).contains("FR-2: stats endpoint")
         .contains("**untraced**");
     assertThat(h.artifacts.content(ArtifactKeys.RELEASE_NOTES)).contains("## Rollback plan")
         .contains("V2 is additive");
+  }
+
+  private static Map<String, String> releaseInputs(String profile, List<String> skipped) {
+    return Map.of(ArtifactKeys.REQUIREMENTS, AgentSupport.pretty(SPEC), ArtifactKeys.PLAN,
+        AgentSupport.pretty(PLAN), ArtifactKeys.CHANGED_FILES, "src/main/java/app/ClickStore.java",
+        ArtifactKeys.SECURITY, "{}", ArtifactKeys.VERIFICATION, "green",
+        ArtifactKeys.TEST_REPORT, "tests", ArtifactKeys.DOCS_SUMMARY, "docs",
+        ArtifactKeys.VALIDATION, AgentSupport.pretty(new ValidationEvidence("a".repeat(40),
+            "b".repeat(40), profile, List.of("maven-verify"), skipped, "host process",
+            List.of())));
+  }
+
+  @Test
+  void degradedVerificationCannotBeReleasedWithoutAnExplicitWaiver() {
+    String notes = AgentSupport.pretty(new ReleaseNotes("t", "s", List.of(), List.of(), "r",
+        "unit only", List.of()));
+    AgentHarness signOffOnly = harness().reply("release-manager", notes);
+    ScriptedApprovalGateway reviewer = ScriptedApprovalGateway.failClosed().script("agent",
+        ScriptedDecision.acceptance(ApprovalDecision.approve("demo", "ok"), "sign-off"));
+
+    RunOutcome blocked = signOffOnly.run(reviewer, new ReleaseAgent(signOffOnly.llm()),
+        releaseInputs("DEGRADED", List.of("integration tests", "coverage gate")));
+
+    assertThat(blocked.status()).isEqualTo(RunStatus.PAUSED);
+    assertThat(reviewer.received()).singleElement().satisfies(r -> {
+      assertThat(r.reasonCodes()).contains("degraded-verification");
+      assertThat(r.proposedOutputs().get(ArtifactKeys.RELEASE_NOTES))
+          .contains("Verification: **DEGRADED** (not run: integration tests, coverage gate)");
+    });
+
+    AgentHarness waived = harness().reply("release-manager", notes);
+    RunOutcome released = waived.run(ScriptedApprovalGateway.failClosed().script("agent",
+        ScriptedDecision.acceptance(ApprovalDecision.approve("demo", "waived: no Docker"),
+            "degraded-verification")), new ReleaseAgent(waived.llm()),
+        releaseInputs("DEGRADED", List.of("integration tests")));
+
+    assertThat(released.status()).isEqualTo(RunStatus.SUCCEEDED);
+    VerifyAndRepairAgent degraded = new VerifyAndRepairAgent(waived.llm(), "",
+        "DEGRADED: unit tests only; integration tests and coverage gate skipped");
+    assertThat(waived.run(degraded, Map.of(ArtifactKeys.CHANGED_FILES, "x")).status())
+        .isEqualTo(RunStatus.SUCCEEDED);
+    assertThat(waived.artifacts.content(ArtifactKeys.VERIFICATION))
+        .contains("DEGRADED").doesNotContain("Full build");
   }
 }

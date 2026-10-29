@@ -10,12 +10,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -38,13 +39,34 @@ public abstract class IntegrationTestSupport {
 
   protected static final Instant START = Instant.parse("2026-01-01T00:00:00Z");
 
-  @ServiceConnection
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+  /**
+   * Set by a sandboxed build gate, which has no Docker inside: use the database it provides
+   * instead of starting a container.
+   */
+  private static final String EXTERNAL_DATABASE = System.getenv("IT_DATABASE_URL");
+
+  static final PostgreSQLContainer POSTGRES =
+      EXTERNAL_DATABASE == null ? new PostgreSQLContainer("postgres:17-alpine") : null;
 
   private static final AtomicInteger CLIENT_SEQUENCE = new AtomicInteger();
 
   static {
-    POSTGRES.start();
+    if (POSTGRES != null) {
+      POSTGRES.start();
+    }
+  }
+
+  @DynamicPropertySource
+  static void database(DynamicPropertyRegistry registry) {
+    if (POSTGRES == null) {
+      registry.add("spring.datasource.url", () -> EXTERNAL_DATABASE);
+      registry.add("spring.datasource.username", () -> System.getenv("IT_DATABASE_USER"));
+      registry.add("spring.datasource.password", () -> System.getenv("IT_DATABASE_PASSWORD"));
+    } else {
+      registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+      registry.add("spring.datasource.username", POSTGRES::getUsername);
+      registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
   }
 
   @Autowired

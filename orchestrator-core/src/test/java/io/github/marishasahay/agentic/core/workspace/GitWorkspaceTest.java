@@ -66,4 +66,31 @@ class GitWorkspaceTest {
     assertThat(GitWorkspace.open(tmp.resolve("ws")).head()).isEqualTo(created.head());
     assertThatThrownBy(() -> GitWorkspace.open(tmp)).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void snapshotsAreConsistentCopiesOfARevisionAndPreviewsWriteNothing() throws Exception {
+    GitWorkspace workspace = GitWorkspace.createFrom(null, tmp.resolve("ws"));
+    workspace.apply(ChangeSet.of(FileChange.write("src/A.java", "class A {}")));
+    String first = workspace.checkpoint("A");
+    workspace.apply(ChangeSet.of(FileChange.write("src/A.java", "class A { int x; }")));
+
+    try (Workspace.Snapshot snapshot = workspace.snapshot(first)) {
+      assertThat(Files.readString(snapshot.root().resolve("src/A.java")))
+          .isEqualTo("class A {}");
+      String preview = workspace.previewDiff(first,
+          ChangeSet.of(FileChange.write("pom.xml", "<project/>")));
+      assertThat(preview).contains("+<project/>");
+      assertThat(workspace.root().resolve("pom.xml")).doesNotExist();
+      snapshot.close();
+      assertThat(snapshot.root()).doesNotExist();
+    }
+    assertThat(workspace.readAt(first, "src/A.java")).contains("class A {}");
+    assertThat(workspace.readAt(first, "src/Missing.java")).isEmpty();
+    String second = workspace.checkpoint("A2");
+    assertThat(workspace.changedBetween(first, second)).containsExactly("src/A.java");
+    assertThat(workspace.treeHash()).isEqualTo(workspace.treeOf(second));
+    assertThat(workspace.hasRevision(second)).isTrue();
+    assertThat(workspace.hasRevision("0000000000000000000000000000000000000000")).isFalse();
+    assertThat(workspace.baselineRevision()).isNotEqualTo(second);
+  }
 }

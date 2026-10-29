@@ -8,6 +8,8 @@ import io.github.marishasahay.agentic.core.graph.NodeSpec;
 import io.github.marishasahay.agentic.core.graph.Stage;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -63,5 +65,28 @@ class CommandGateTest {
 
     assertThat(result.passed()).isFalse();
     assertThat(result.evidence()).contains("[plan, openapi]");
+  }
+
+  @Test
+  void theHostSandboxPassesOnlyAllowListedEnvironmentVariables() {
+    Map<String, String> environment = new HashMap<>(Map.of("PATH", "/usr/bin", "HOME", "/home/a",
+        "GEMINI_API_KEY", "secret", "AWS_SECRET_ACCESS_KEY", "secret", "GITHUB_TOKEN", "secret",
+        "TESTCONTAINERS_RYUK_DISABLED", "true"));
+
+    HostSandbox.scrubbed().filter(environment);
+
+    assertThat(environment).containsOnlyKeys("PATH", "HOME", "TESTCONTAINERS_RYUK_DISABLED");
+    assertThat(HostSandbox.scrubbed().describe()).contains("NOT isolated");
+  }
+
+  @Test
+  void theDockerSandboxRunsMavenOfflineAndDescribesItsBoundary() {
+    DockerSandbox offline = DockerSandbox.standard(DockerSandbox.Network.OFFLINE);
+    DockerSandbox online = DockerSandbox.standard(DockerSandbox.Network.ONLINE);
+
+    assertThat(offline.containerCommand(List.of("mvn", "-q", "verify")))
+        .containsExactly("mvn", "-o", "-q", "verify");
+    assertThat(online.containerCommand(List.of("mvn", "verify"))).containsExactly("mvn", "verify");
+    assertThat(offline.describe()).contains("network offline", "no Docker socket", "memory 3g");
   }
 }

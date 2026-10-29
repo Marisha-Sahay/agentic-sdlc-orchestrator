@@ -63,7 +63,8 @@ public record EngineConfig(
     settings.put("maxTotalAttempts", String.valueOf(maxTotalAttempts));
     settings.put("maxAgentCalls", String.valueOf(maxAgentCalls));
     settings.put("maxFailedNodes", String.valueOf(maxFailedNodes));
-    settings.put("killSwitch", killSwitch == null ? "none" : killSwitch.toString());
+    settings.put("killSwitch", killSwitch == null ? "none"
+        : killSwitch.getFileName() + " in the run directory");
     return settings;
   }
 }

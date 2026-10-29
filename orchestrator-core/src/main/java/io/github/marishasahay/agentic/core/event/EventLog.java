@@ -29,6 +29,7 @@ public final class EventLog {
   private final Clock clock;
   private final List<EventEnvelope> events = new ArrayList<>();
   private final List<Consumer<EventEnvelope>> subscribers = new CopyOnWriteArrayList<>();
+  private Throwable writeFailure;
 
   /**
    * Creates a log, loading any events already in {@code file}.
@@ -72,12 +73,19 @@ public final class EventLog {
   }
 
   /**
-   * Appends an event, extending the hash chain and persisting it before returning.
+   * Appends an event, extending the hash chain and persisting it before returning. Fail-stop:
+   * once a write has failed, every later append fails too, so the log can never contain a gap
+   * that later events paper over.
    *
    * @param event payload
    * @return the stored envelope
+   * @throws AuditUnavailableException if the event could not be persisted
    */
   public synchronized EventEnvelope append(RunEvent event) {
+    if (writeFailure != null) {
+      throw new AuditUnavailableException("Audit log unavailable since an earlier write failed; "
+          + "refusing to record " + event.getClass().getSimpleName(), writeFailure);
+    }
     long seq = events.size() + 1L;
     String prev = events.isEmpty() ? GENESIS : events.getLast().hash();
     EventEnvelope unsigned = new EventEnvelope(seq, runId, clock.instant(), event, prev, null);
@@ -88,7 +96,9 @@ public final class EventLog {
         Files.writeString(file, Json.write(envelope) + "\n", StandardCharsets.UTF_8,
             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
       } catch (IOException e) {
-        throw new UncheckedIOException("Audit log write failed; refusing to continue", e);
+        writeFailure = e;
+        throw new AuditUnavailableException("Audit log write failed (" + e + "); refusing to "
+            + "continue unaudited", e);
       }
     }
     events.add(envelope);
@@ -100,6 +110,15 @@ public final class EventLog {
       }
     }
     return envelope;
+  }
+
+  /**
+   * Whether an earlier write failed (the log is then read-only and the run must stop).
+   *
+   * @return true once a write has failed
+   */
+  public synchronized boolean unavailable() {
+    return writeFailure != null;
   }
 
   public synchronized List<EventEnvelope> events() {

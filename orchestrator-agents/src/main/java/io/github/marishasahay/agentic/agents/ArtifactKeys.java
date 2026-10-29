@@ -19,6 +19,7 @@ public final class ArtifactKeys {
   public static final String DOCS_SUMMARY = "docs.summary";
   public static final String SECURITY = "security.review";
   public static final String VERIFICATION = "verification.report";
+  public static final String VALIDATION = "validation.evidence";
   public static final String RELEASE_NOTES = "release.notes";
   public static final String RELEASE_PATCH = "release.patch";
   public static final String TRACEABILITY = "release.traceability";

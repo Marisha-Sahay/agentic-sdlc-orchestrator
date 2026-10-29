@@ -2,6 +2,7 @@ package io.github.marishasahay.agentic.app;
 
 import io.github.marishasahay.agentic.agents.AgentSupport;
 import io.github.marishasahay.agentic.agents.ArchitectAgent;
+import io.github.marishasahay.agentic.agents.gates.AmendmentContracts;
 import io.github.marishasahay.agentic.agents.llm.CassetteLlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmMode;
@@ -9,7 +10,9 @@ import io.github.marishasahay.agentic.agents.llm.ModelSettings;
 import io.github.marishasahay.agentic.agents.llm.ThrottledLlmClient;
 import io.github.marishasahay.agentic.core.approval.ApprovalDecision;
 import io.github.marishasahay.agentic.core.approval.ApprovalGateway;
+import io.github.marishasahay.agentic.core.approval.ApprovalKind;
 import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway;
+import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway.ScriptedDecision;
 import io.github.marishasahay.agentic.core.artifact.ArtifactStore;
 import io.github.marishasahay.agentic.core.engine.EngineConfig;
 import io.github.marishasahay.agentic.core.engine.NodeState;
@@ -19,9 +22,15 @@ import io.github.marishasahay.agentic.core.engine.WorkflowEngine;
 import io.github.marishasahay.agentic.core.event.EventEnvelope;
 import io.github.marishasahay.agentic.core.event.EventLog;
 import io.github.marishasahay.agentic.core.event.Json;
+import io.github.marishasahay.agentic.core.gate.CommandGate;
+import io.github.marishasahay.agentic.core.gate.CommandSandbox;
+import io.github.marishasahay.agentic.core.gate.DockerSandbox;
+import io.github.marishasahay.agentic.core.gate.GateContext;
+import io.github.marishasahay.agentic.core.gate.GateResult;
 import io.github.marishasahay.agentic.core.graph.WorkflowGraph;
 import io.github.marishasahay.agentic.core.metrics.MetricsCalculator;
 import io.github.marishasahay.agentic.core.metrics.RunMetrics;
+import io.github.marishasahay.agentic.core.util.Hashing;
 import io.github.marishasahay.agentic.core.workspace.GitWorkspace;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -29,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -36,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -46,8 +57,12 @@ import java.util.stream.Stream;
  *
  * <pre>
  * agentic run &lt;scenario&gt; [--llm live|record|replay] [--approvals interactive|scripted]
- *                       [--run-id id] [--max-parallel n]
- * agentic resume &lt;run-id&gt; [--llm ...] [--approvals ...]
+ *                       [--sandbox host|docker] [--cassettes name] [--run-id id]
+ *                       [--max-parallel n]
+ * agentic resume &lt;run-id&gt; [--llm ...] [--approvals ...] [--reset-budgets who]
+ * agentic check-evidence &lt;name&gt;...   verify saved evidence under docs/evidence
+ * agentic publish-evidence &lt;run-id&gt; &lt;name&gt;  copy a run's evidence to docs/evidence
+ * agentic warmup-sandbox         fill the Docker sandbox's dependency cache (network on)
  * agentic stop &lt;run-id&gt;        engage the kill switch of a running run
  * agentic report &lt;run-id&gt;      re-render the HTML report from the event log
  * agentic verify-log &lt;run-id&gt;  verify the hash chain of the audit log
@@ -88,6 +103,9 @@ public final class AgenticCli {
         case "verify-log" -> cli.verifyLog(parsed.target());
         case "metrics" -> cli.metrics();
         case "list" -> cli.list();
+        case "check-evidence" -> cli.checkEvidence(parsed.targets());
+        case "publish-evidence" -> cli.publishEvidence(parsed.targets());
+        case "warmup-sandbox" -> cli.warmupSandbox();
         default -> {
           System.err.println("Unknown command " + parsed.command() + "\n" + usage());
           yield 2;
@@ -105,19 +123,26 @@ public final class AgenticCli {
     Scenario scenario;
     LlmMode mode;
     String approvalsMode;
+    String cassetteSet;
+    String sandboxName;
     if (resume) {
       runDir = runsDir().resolve(args.target());
       Map<?, ?> meta = Json.read(read(runDir.resolve("run.json")), Map.class);
       scenario = loadScenario((String) meta.get("scenario"));
       mode = args.option("llm").map(v -> LlmMode.valueOf(v.toUpperCase()))
           .orElse(LlmMode.valueOf((String) meta.get("llm")));
-      approvalsMode = args.option("approvals").orElse((String) meta.get("approvals"));
+      approvalsMode = ApprovalModes.parse(args.option("approvals")
+          .orElse((String) meta.get("approvals")));
+      cassetteSet = (String) meta.get("cassettes");
+      sandboxName = (String) meta.get("sandbox");
     } else {
       scenario = loadScenario(args.target());
+      cassetteSet = args.option("cassettes").orElse(scenario.name());
       mode = args.option("llm").map(v -> LlmMode.valueOf(v.toUpperCase()))
-          .orElse(hasCassettes(scenario) ? LlmMode.REPLAY : LlmMode.LIVE);
-      approvalsMode = args.option("approvals").orElse(scenario.approvals() != null
-          ? scenario.approvals() : System.console() != null ? "interactive" : "scripted");
+          .orElse(hasCassettes(cassetteSet) ? LlmMode.REPLAY : LlmMode.LIVE);
+      approvalsMode = ApprovalModes.resolve(args.option("approvals"), scenario.approvals(), mode,
+          System.console() != null);
+      sandboxName = args.option("sandbox").orElse("host");
       String runId = args.option("run-id").orElse(scenario.name() + "-"
           + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")));
       runDir = runsDir().resolve(runId);
@@ -126,42 +151,50 @@ public final class AgenticCli {
       }
     }
     String runId = runDir.getFileName().toString();
+    CommandSandbox sandbox = sandbox(sandboxName);
 
     ModelSettings models = ModelSettings.fromEnvironment(System.getenv());
-    Path cassettes = repo.resolve("cassettes").resolve(scenario.name());
+    Path cassettes = repo.resolve("cassettes").resolve(cassetteSet);
     AgentSupport primary = new AgentSupport(llm(models, models.primaryModel(), cassettes, mode));
     AgentSupport fallback = new AgentSupport(llm(models, models.fallbackModel(), cassettes, mode));
     if (!resume) {
       write(runDir.resolve("run.json"), Json.write(Map.of("scenario", scenario.name(),
-          "llm", mode.name(), "approvals", approvalsMode)));
+          "llm", mode.name(), "approvals", approvalsMode, "cassettes", cassetteSet,
+          "sandbox", sandboxName)));
     }
-    WorkflowTemplates.BuildCommands build = new WorkflowTemplates.BuildCommands(dockerAvailable());
+    WorkflowTemplates.BuildCommands build = new WorkflowTemplates.BuildCommands(
+        sandbox instanceof DockerSandbox || dockerAvailable(), sandbox);
     Path baseline = repo.resolve(scenario.baseline());
     String baselineContract = scenario.startsFromExistingCode()
         ? readIfExists(baseline.resolve(ArchitectAgent.CONTRACT_PATH)) : "";
     WorkflowGraph graph = new WorkflowTemplates(primary, fallback, conventions(),
         baselineContract, build).build(scenario);
+    String workflowSha = graph.fingerprint();
 
     Path workspaceDir = runDir.resolve("workspace");
     GitWorkspace workspace = resume ? GitWorkspace.open(workspaceDir)
         : GitWorkspace.createFrom(baseline, workspaceDir);
     EventLog log = new EventLog(runId, runDir.resolve("events.jsonl"), Clock.systemUTC());
     log.subscribe(new ProgressPrinter(System.out));
+    ArtifactStore artifacts = new ArtifactStore(runDir.resolve("artifacts"));
     WorkflowEngine engine = WorkflowEngine.builder()
         .config(EngineConfig.defaults().withKillSwitch(runDir.resolve("STOP"))
             .withMaxParallelNodes(args.option("max-parallel").map(Integer::parseInt).orElse(4)))
         .events(log)
-        .artifacts(new ArtifactStore(runDir.resolve("artifacts")))
+        .artifacts(artifacts)
         .workspace(workspace)
         .policy(GovernancePolicy.standard())
         .approvals(approvals(approvalsMode, scenario, runDir))
+        .amendmentValidator(new AmendmentContracts(artifacts, baselineContract,
+            scenario.kind() == Scenario.Kind.AMBIGUOUS, WorkflowTemplates.MAX_TASKS))
         .build();
 
     System.out.println(Ansi.bold("Scenario: ") + scenario.title());
     System.out.println(Ansi.bold("Run dir:  ") + runDir);
     System.out.println(Ansi.bold("Models:   ") + mode.name().toLowerCase() + " " + models);
     System.out.println(Ansi.bold("Verify:   ") + build.profile());
-    System.out.println(Ansi.bold("Approvals:") + " " + approvalsMode
+    System.out.println(Ansi.bold("Sandbox:  ") + sandbox.describe());
+    System.out.println(Ansi.bold("Approvals:") + " " + approvalsLabel(approvalsMode, scenario)
         + "   (safe-stop anytime: agentic stop " + runId + ")\n");
 
     CountDownLatch finished = new CountDownLatch(1);
@@ -171,12 +204,18 @@ public final class AgenticCli {
     });
     Runtime.getRuntime().addShutdownHook(hook);
     try {
-      RunOutcome outcome = resume ? engine.resume(graph)
+      RunOutcome outcome = resume
+          ? engine.resume(graph, new WorkflowEngine.ResumeOptions(Map.of(
+              "scenario", scenario.name(), "requirementSha", Hashing.sha256(
+                  scenario.requirement()), "workflowSha", workflowSha),
+              args.option("reset-budgets").orElse(null)))
           : engine.run(graph, scenario.name(), scenario.requirement(), Map.of(
               "llmMode", mode.name(), "primaryModel", String.valueOf(models.primaryModel()),
               "fallbackModel", String.valueOf(models.fallbackModel()),
-              "verifyProfile", build.profile(), "approvals", approvalsMode,
-              "baseline", scenario.baseline()));
+              "verifyProfile", build.profile(), "sandbox", sandbox.describe(),
+              "approvals", approvalsLabel(approvalsMode, scenario),
+              "cassettes", cassetteSet, "baseline", scenario.baseline(),
+              "workflowSha", workflowSha));
       List<EventEnvelope> events = log.events();
       String mermaid = graph.toMermaid(id -> HtmlReport.nodeClass(events, id,
           outcome.nodeStates().getOrDefault(id, NodeState.PENDING).name()))
@@ -206,16 +245,97 @@ public final class AgenticCli {
   }
 
   private ApprovalGateway approvals(String mode, Scenario scenario, Path runDir) {
-    if (mode.equals("interactive")) {
+    if (mode.equals(ApprovalModes.INTERACTIVE)) {
       return new ConsoleApprovalGateway(runDir.resolve("edits"),
-          System.getProperty("user.name", "reviewer"));
+          "human:" + System.getProperty("user.name", "reviewer"));
     }
-    ScriptedApprovalGateway scripted = new ScriptedApprovalGateway(ApprovalDecision.approve(
-        "scripted-reviewer", "approved by scenario script (unattended run)"));
+    String reviewer = "scripted-demo (scenarios/" + scenario.name() + ".yaml)";
+    ScriptedApprovalGateway scripted = ScriptedApprovalGateway.failClosed();
     scenario.scriptedApprovals().forEach((node, decisions) -> scripted.script(node,
-        decisions.stream().map(d -> new ApprovalDecision(d.approve(), "scripted-reviewer",
-            d.comment(), d.amendments())).toArray(ApprovalDecision[]::new)));
+        decisions.stream().map(d -> new ScriptedDecision(
+            ApprovalKind.valueOf(d.kind().toUpperCase()), Set.copyOf(d.covers()),
+            new ApprovalDecision(d.approve(), reviewer, d.comment(), d.amendments())))
+            .toArray(ScriptedDecision[]::new)));
     return scripted;
+  }
+
+  private static String approvalsLabel(String mode, Scenario scenario) {
+    return mode.equals(ApprovalModes.INTERACTIVE) ? "interactive (human reviewer in the terminal)"
+        : "scripted demonstration decisions from scenarios/" + scenario.name() + ".yaml "
+            + "(not a human review; requests they do not cover pause the run)";
+  }
+
+  private static CommandSandbox sandbox(String name) {
+    return switch (name) {
+      case "host" -> CommandSandbox.host();
+      case "docker" -> DockerSandbox.standard(DockerSandbox.Network.OFFLINE);
+      default -> throw new IllegalArgumentException("Unknown sandbox '" + name
+          + "' (use host or docker)");
+    };
+  }
+
+  private int checkEvidence(List<String> names) {
+    if (names.isEmpty()) {
+      throw new IllegalArgumentException("Name the evidence sets to check, e.g. "
+          + "check-evidence greenfield brownfield ambiguous");
+    }
+    int failures = 0;
+    for (String name : names) {
+      EvidenceCheck.Result result = EvidenceCheck.check(repo.resolve("docs/evidence")
+          .resolve(name));
+      if (result.ok()) {
+        System.out.println(Ansi.green("OK   ") + name + "  model replies: "
+            + result.provenance());
+      } else {
+        failures++;
+        System.out.println(Ansi.red("FAIL ") + name + "  " + result.problems());
+      }
+    }
+    return failures == 0 ? 0 : 5;
+  }
+
+  private int publishEvidence(List<String> targets) {
+    if (targets.size() != 2) {
+      throw new IllegalArgumentException("Usage: publish-evidence <run-id> <name>");
+    }
+    Path from = runsDir().resolve(targets.get(0));
+    Path to = repo.resolve("docs/evidence").resolve(targets.get(1));
+    try {
+      if (Files.exists(to)) {
+        try (Stream<Path> old = Files.walk(to)) {
+          old.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+      }
+      for (String item : List.of("events.jsonl", "report.html", "metrics.json", "graph.mmd",
+          "release.patch", "artifacts")) {
+        Path source = from.resolve(item);
+        if (!Files.exists(source)) {
+          continue;
+        }
+        try (Stream<Path> files = Files.walk(source)) {
+          for (Path file : files.filter(Files::isRegularFile).toList()) {
+            Path target = to.resolve(from.relativize(file).toString());
+            Files.createDirectories(target.getParent());
+            Files.copy(file, target);
+          }
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    System.out.println("Published " + from + " -> " + to);
+    return checkEvidence(List.of(targets.get(1)));
+  }
+
+  private int warmupSandbox() {
+    Path copy = runsDir().resolve("sandbox-warmup");
+    GitWorkspace.createFrom(repo.resolve("url-shortener"), copy.resolve("url-shortener"));
+    GateResult result = CommandGate.of("sandbox-warmup", Duration.ofMinutes(30), "mvn", "-B",
+        "-ntp", "verify").in(DockerSandbox.standard(DockerSandbox.Network.ONLINE))
+        .evaluate(new GateContext(null, null, Map.of(), copy.resolve("url-shortener")));
+    System.out.println(result.passed() ? Ansi.green("Dependency cache warmed (network was "
+        + "enabled for this trusted baseline build only)") : Ansi.red(result.evidence()));
+    return result.passed() ? 0 : 1;
   }
 
   private RunMetrics renderReport(Path runDir, List<EventEnvelope> events, String mermaid) {
@@ -316,8 +436,8 @@ public final class AgenticCli {
     return Scenario.load(file);
   }
 
-  private boolean hasCassettes(Scenario scenario) {
-    Path dir = repo.resolve("cassettes").resolve(scenario.name());
+  private boolean hasCassettes(String cassetteSet) {
+    Path dir = repo.resolve("cassettes").resolve(cassetteSet);
     try (Stream<Path> files = Files.isDirectory(dir) ? Files.list(dir) : Stream.empty()) {
       return files.findAny().isPresent();
     } catch (IOException e) {
@@ -415,15 +535,20 @@ public final class AgenticCli {
   private static String usage() {
     return """
         agentic run <scenario> [--llm live|record|replay] [--approvals interactive|scripted]
-                               [--run-id <id>] [--max-parallel <n>]
-        agentic resume <run-id> [--llm ...] [--approvals ...]
+                               [--sandbox host|docker] [--cassettes <set>] [--run-id <id>]
+                               [--max-parallel <n>]
+        agentic resume <run-id> [--llm ...] [--approvals ...] [--reset-budgets <who>]
+        agentic check-evidence <name>...      verify saved evidence in docs/evidence/<name>
+        agentic publish-evidence <run-id> <name>   copy a run's evidence to docs/evidence
+        agentic warmup-sandbox       fill the Docker sandbox's dependency cache (network on)
         agentic stop <run-id>        engage the kill switch (safe stop, resumable)
         agentic report <run-id>      re-render report.html from the audit log
         agentic verify-log <run-id>  verify the audit log's hash chain
         agentic metrics              reliability metrics across all runs
         agentic list                 list runs
 
-        Scenarios: greenfield, brownfield, ambiguous (scenarios/*.yaml)
+        Scenarios: greenfield, brownfield, ambiguous, drill (scenarios/*.yaml)
+        Approvals never default to automatic: without a terminal pass --approvals explicitly.
         Live/record mode needs GEMINI_API_KEY and AGENTIC_MODEL (see .env.example).""";
   }
 
@@ -434,22 +559,29 @@ public final class AgenticCli {
    * @param target scenario or run id
    * @param options {@code --key value} options
    */
-  record Args(String command, String target, Map<String, String> options) {
+  record Args(String command, List<String> targets, Map<String, String> options) {
 
     static Args parse(String[] args) {
       Map<String, String> options = new LinkedHashMap<>();
-      String target = null;
+      List<String> targets = new ArrayList<>();
       for (int i = 1; i < args.length; i++) {
         if (args[i].startsWith("--")) {
           if (i + 1 >= args.length) {
             throw new IllegalArgumentException("Missing value for " + args[i]);
           }
           options.put(args[i].substring(2), args[++i]);
-        } else if (target == null) {
-          target = args[i];
+        } else {
+          targets.add(args[i]);
         }
       }
-      return new Args(args[0], target, options);
+      return new Args(args[0], List.copyOf(targets), options);
+    }
+
+    String target() {
+      if (targets.isEmpty()) {
+        throw new IllegalArgumentException(command + " needs a scenario or run id");
+      }
+      return targets.getFirst();
     }
 
     Optional<String> option(String key) {

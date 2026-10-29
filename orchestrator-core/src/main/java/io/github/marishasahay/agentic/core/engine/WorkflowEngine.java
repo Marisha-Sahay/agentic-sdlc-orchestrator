@@ -1,8 +1,10 @@
 package io.github.marishasahay.agentic.core.engine;
 
+import io.github.marishasahay.agentic.core.approval.AmendmentValidator;
 import io.github.marishasahay.agentic.core.approval.ApprovalGateway;
 import io.github.marishasahay.agentic.core.artifact.Artifact;
 import io.github.marishasahay.agentic.core.artifact.ArtifactStore;
+import io.github.marishasahay.agentic.core.event.AuditUnavailableException;
 import io.github.marishasahay.agentic.core.event.EventEnvelope;
 import io.github.marishasahay.agentic.core.event.EventLog;
 import io.github.marishasahay.agentic.core.event.RunEvent;
@@ -24,6 +26,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +49,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *       together with everything downstream of it (re-planning).</li>
  *   <li>Kill switch, time/attempt/model-call budgets and a failure threshold engage a safe stop.
  *       </li>
+ *   <li>If the audit log cannot be written the run stops: nothing happens unaudited.</li>
  * </ul>
  *
  * <p>All scheduling state is owned by the calling thread; node runners only report outcomes.
@@ -64,9 +68,12 @@ public final class WorkflowEngine {
   private final Map<String, NodeState> states = new LinkedHashMap<>();
   private final Map<String, Map<String, String>> consumedInputs = new HashMap<>();
   private final Set<String> staleWhileRunning = new LinkedHashSet<>();
+  private final ReentrantLock publishLock = new ReentrantLock();
+  private final Map<String, AtomicInteger> generations = new ConcurrentHashMap<>();
   private final NodeRunner runner;
   private final ExecutorService taskExecutor = Executors.newVirtualThreadPerTaskExecutor();
   private int failedNodes;
+  private Duration elapsedBefore = Duration.ZERO;
   private volatile Instant started;
 
   private WorkflowEngine(Builder builder) {
@@ -76,9 +83,10 @@ public final class WorkflowEngine {
     this.artifacts = Objects.requireNonNull(builder.artifacts, "artifacts");
     this.workspace = builder.workspace;
     this.clock = builder.clock;
-    this.runner = new NodeRunner(runId, artifacts, workspace, builder.policy, builder.approvals,
-        events, clock, stop, new ReentrantLock(), attempts, agentCalls, taskExecutor,
-        this::enforceStopConditions);
+    this.runner = new NodeRunner(new NodeRunner.Shared(runId, artifacts, workspace, events,
+        clock, stop, this::requestStop, new ReentrantLock(), publishLock, generations, attempts,
+        agentCalls), builder.approvals, builder.amendmentValidator, builder.policy,
+        taskExecutor, this::enforceStopConditions);
   }
 
   public static Builder builder() {
@@ -125,37 +133,91 @@ public final class WorkflowEngine {
   }
 
   /**
-   * Resumes a stopped or failed run from its own event log: accepted nodes and their artifacts
-   * are restored, expansions are replayed from stored artifacts (no model calls), the workspace
-   * is reset to the last checkpoint, and failed/skipped/unfinished nodes run again.
+   * Resumes a stopped or failed run from its own event log with default options.
    *
    * @param graph the same template graph the run started with
    * @return final outcome
    */
   public RunOutcome resume(WorkflowGraph graph) {
+    return resume(graph, ResumeOptions.defaults());
+  }
+
+  /**
+   * Resumes a stopped or failed run from its own event log. Before anything is restored the
+   * log's hash chain is verified, every persisted artifact is re-hashed against its recorded
+   * hash, and the run identity is compared with the current configuration; any mismatch
+   * refuses the resume. Then only fully accepted work is restored: a node counts as accepted
+   * only if its success event (the commit point) was written, artifact versions of attempts
+   * that never got that far are discarded, and the workspace is reset to the last accepted
+   * checkpoint, or to the baseline if there is none. Budgets carry over unless a reset is
+   * explicitly authorized, which is recorded.
+   *
+   * @param graph the same template graph the run started with
+   * @param options identity to verify and budget handling
+   * @return final outcome
+   * @throws ResumeRefusedException if the log, artifacts or identity do not check out
+   */
+  public RunOutcome resume(WorkflowGraph graph, ResumeOptions options) {
     List<EventEnvelope> history = events.events();
+    if (history.isEmpty() || !(history.getFirst().event() instanceof RunEvent.RunStarted start)) {
+      throw new ResumeRefusedException("the audit log does not start with RunStarted");
+    }
+    EventLog.verifyChain(history).ifPresent(seq -> {
+      throw new ResumeRefusedException("audit log hash chain is broken at event " + seq);
+    });
+    verifyIdentity(start, options.expectedIdentity());
+
+    Set<String> acceptedRefs = new LinkedHashSet<>();
+    history.stream().map(EventEnvelope::event)
+        .filter(RunEvent.NodeSucceeded.class::isInstance)
+        .forEach(e -> acceptedRefs.addAll(((RunEvent.NodeSucceeded) e).outputs().values()));
     Map<String, RunEvent.NodeSucceeded> accepted = new LinkedHashMap<>();
     // Only executions that finished (succeeded or failed) count: an execution interrupted by a
     // safe stop produced no outcome, so its resumed run keeps the same number and replay key.
     Map<String, Integer> executions = new HashMap<>();
-    String lastCheckpoint = null;
+    List<String> discarded = new ArrayList<>();
+    String checkpoint = null;
+    int attemptsUsed = 0;
+    int callsUsed = 0;
+    Instant sessionStart = history.getFirst().at();
+    Duration elapsed = Duration.ZERO;
     for (EventEnvelope envelope : history) {
       switch (envelope.event()) {
-        case RunEvent.ArtifactProduced a -> artifacts.restore(new Artifact(a.key(), a.version(),
-            a.sha256(), a.producedBy(), envelope.at(), artifacts.readPersisted(a.path())));
+        case RunEvent.ArtifactProduced a -> {
+          Artifact artifact = verifiedArtifact(a, envelope);
+          if (acceptedRefs.contains(artifact.ref())) {
+            artifacts.restore(artifact);
+          } else {
+            artifacts.reserve(a.key(), a.version());
+            discarded.add(artifact.ref());
+          }
+        }
         case RunEvent.NodeSucceeded s -> {
           accepted.remove(s.nodeId());
           accepted.put(s.nodeId(), s);
           executions.merge(s.nodeId(), 1, Integer::sum);
+          if (s.checkpoint() != null) {
+            checkpoint = s.checkpoint();
+          }
         }
         case RunEvent.NodeFailed f -> executions.merge(f.nodeId(), 1, Integer::sum);
         case RunEvent.NodeInvalidated i -> accepted.remove(i.nodeId());
-        case RunEvent.CheckpointCreated c -> lastCheckpoint = c.checkpoint();
+        case RunEvent.NodeStarted n -> attemptsUsed++;
+        case RunEvent.AgentCalled c -> callsUsed++;
+        case RunEvent.BudgetReset r -> {
+          attemptsUsed = 0;
+          callsUsed = 0;
+        }
+        case RunEvent.RunResumed r -> {
+          elapsed = elapsed.plus(Duration.between(sessionStart, previousAt(history, envelope)));
+          sessionStart = envelope.at();
+        }
         default -> {
           // other events carry no resumable state
         }
       }
     }
+    elapsedBefore = elapsed.plus(Duration.between(sessionStart, history.getLast().at()));
     for (RunEvent.NodeSucceeded s : accepted.values()) {
       if (!graph.contains(s.nodeId())) {
         continue;
@@ -167,16 +229,92 @@ public final class WorkflowEngine {
         graph.insertAfter(spec.id(), spec.expansion().expand(artifacts));
       }
     }
-    if (workspace != null && lastCheckpoint != null) {
-      workspace.rollbackTo(lastCheckpoint);
+    String restoreTo = "baseline";
+    if (workspace != null) {
+      String revision = checkpoint != null ? checkpoint : workspace.baselineRevision();
+      if (!workspace.hasRevision(revision)) {
+        throw new ResumeRefusedException("accepted checkpoint " + revision
+            + " is missing from the workspace");
+      }
+      workspace.rollbackTo(revision);
+      restoreTo = checkpoint != null ? checkpoint : "baseline";
     }
+    if (options.budgetResetAuthorizedBy() != null) {
+      events.append(new RunEvent.BudgetReset(options.budgetResetAuthorizedBy(), attemptsUsed,
+          callsUsed));
+      attemptsUsed = 0;
+      callsUsed = 0;
+      elapsedBefore = Duration.ZERO;
+    }
+    attempts.set(attemptsUsed);
+    agentCalls.set(callsUsed);
     runner.restoreExecutions(executions);
-    events.append(new RunEvent.RunResumed(states.size()));
+    events.append(new RunEvent.RunResumed(states.size(), restoreTo, discarded, attemptsUsed,
+        callsUsed));
     return schedule(graph);
   }
 
+  /**
+   * How a run may be resumed.
+   *
+   * @param expectedIdentity values the log's RunStarted event must match: {@code scenario},
+   *     {@code requirementSha}, or any recorded setting such as {@code workflowSha}
+   * @param budgetResetAuthorizedBy who authorized resetting the budgets, or null to carry them
+   *     over
+   */
+  public record ResumeOptions(Map<String, String> expectedIdentity,
+      String budgetResetAuthorizedBy) {
+
+    public ResumeOptions {
+      expectedIdentity = Map.copyOf(expectedIdentity);
+    }
+
+    public static ResumeOptions defaults() {
+      return new ResumeOptions(Map.of(), null);
+    }
+  }
+
+  private void verifyIdentity(RunEvent.RunStarted start, Map<String, String> expected) {
+    List<String> mismatches = new ArrayList<>();
+    expected.forEach((key, value) -> {
+      String recorded = switch (key) {
+        case "scenario" -> start.scenario();
+        case "requirementSha" -> start.requirementSha();
+        default -> start.settings().get(key);
+      };
+      if (!value.equals(recorded)) {
+        mismatches.add(key + " (log: " + recorded + ", now: " + value + ")");
+      }
+    });
+    if (!mismatches.isEmpty()) {
+      throw new ResumeRefusedException("the run was started with a different configuration: "
+          + mismatches);
+    }
+  }
+
+  private Artifact verifiedArtifact(RunEvent.ArtifactProduced a, EventEnvelope envelope) {
+    String content;
+    try {
+      content = artifacts.readPersisted(a.path());
+    } catch (RuntimeException e) {
+      throw new ResumeRefusedException("artifact " + a.key() + "@v" + a.version()
+          + " is missing (" + a.path() + ")");
+    }
+    if (!Hashing.sha256(content).equals(a.sha256())) {
+      throw new ResumeRefusedException("artifact " + a.key() + "@v" + a.version()
+          + " does not match the hash recorded in the audit log (modified or corrupted)");
+    }
+    return new Artifact(a.key(), a.version(), a.sha256(), a.producedBy(), envelope.at(),
+        content);
+  }
+
+  private static Instant previousAt(List<EventEnvelope> history, EventEnvelope current) {
+    int index = history.indexOf(current);
+    return index > 0 ? history.get(index - 1).at() : current.at();
+  }
+
   private RunOutcome schedule(WorkflowGraph graph) {
-    started = clock.instant();
+    started = clock.instant().minus(elapsedBefore);
     Map<Future<NodeOutcome>, String> running = new HashMap<>();
     try (ExecutorService nodeExecutor = Executors.newVirtualThreadPerTaskExecutor()) {
       CompletionService<NodeOutcome> completion = new ExecutorCompletionService<>(nodeExecutor);
@@ -205,6 +343,8 @@ public final class WorkflowEngine {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       requestStop("scheduler interrupted");
+    } catch (AuditUnavailableException e) {
+      requestStop("audit log unavailable: " + e.getMessage());
     } finally {
       taskExecutor.shutdownNow();
     }
@@ -217,6 +357,13 @@ public final class WorkflowEngine {
       return;
     }
     if (staleWhileRunning.remove(id)) {
+      if (outcome.kind() == NodeOutcome.Kind.SUCCEEDED) {
+        // Published just before the invalidation reached it: record that it is superseded so
+        // resume does not treat it as accepted, and re-check consumers of what it published.
+        events.append(new RunEvent.NodeInvalidated(id,
+            "accepted while an upstream input was being replaced; superseded"));
+        replanStaleNodes(graph, outcome.updatedKeys());
+      }
       states.put(id, NodeState.PENDING);
       return;
     }
@@ -234,7 +381,7 @@ public final class WorkflowEngine {
           requestStop("failure threshold reached (" + failedNodes + " failed node(s))");
         }
       }
-      case STOPPED -> states.put(id, NodeState.PENDING);
+      case STOPPED, DISCARDED -> states.put(id, NodeState.PENDING);
       default -> throw new IllegalStateException("Unknown outcome " + outcome.kind());
     }
   }
@@ -280,14 +427,26 @@ public final class WorkflowEngine {
   private void invalidate(WorkflowGraph graph, String id, String cause) {
     List<String> closure = new ArrayList<>(List.of(id));
     closure.addAll(graph.transitiveDependentsOf(id));
+    // First stop in-flight work from being accepted. Under the publish lock, so a runner either
+    // published before this (and is superseded in onOutcome) or sees the new generation and
+    // discards its work.
+    publishLock.lock();
+    try {
+      for (String target : closure) {
+        if (graph.contains(target) && states.get(target) == NodeState.RUNNING) {
+          generations.computeIfAbsent(target, k -> new AtomicInteger()).incrementAndGet();
+          staleWhileRunning.add(target);
+        }
+      }
+    } finally {
+      publishLock.unlock();
+    }
     for (String target : closure) {
       if (!graph.contains(target)) {
         continue;
       }
       NodeState state = states.getOrDefault(target, NodeState.PENDING);
-      if (state == NodeState.RUNNING) {
-        staleWhileRunning.add(target);
-      } else if (state != NodeState.PENDING) {
+      if (state != NodeState.PENDING && state != NodeState.RUNNING) {
         states.put(target, NodeState.PENDING);
         consumedInputs.remove(target);
         events.append(new RunEvent.NodeInvalidated(target,
@@ -325,7 +484,9 @@ public final class WorkflowEngine {
 
   /** Called by the scheduler between rounds and by runners before every attempt. */
   private void enforceStopConditions() {
-    if (config.killSwitch() != null && Files.exists(config.killSwitch())) {
+    if (events.unavailable()) {
+      requestStop("audit log unavailable");
+    } else if (config.killSwitch() != null && Files.exists(config.killSwitch())) {
       requestStop("kill switch engaged (" + config.killSwitch().getFileName() + ")");
     } else if (Duration.between(started, clock.instant()).compareTo(config.maxRunDuration()) > 0) {
       requestStop("run-time budget of " + config.maxRunDuration() + " exhausted");
@@ -338,7 +499,11 @@ public final class WorkflowEngine {
 
   private void requestStop(String reason) {
     if (stop.requestStop(reason)) {
-      events.append(new RunEvent.StopRequested(reason));
+      try {
+        events.append(new RunEvent.StopRequested(reason));
+      } catch (AuditUnavailableException e) {
+        // already stopping because of it; the outcome reports the audit failure
+      }
     }
   }
 
@@ -369,7 +534,12 @@ public final class WorkflowEngine {
           .filter(e -> e.getValue() == NodeState.FAILED).map(Map.Entry::getKey).toList();
       case PAUSED -> stop.isStopRequested() ? stop.reason() : "unfinished nodes remain";
     };
-    events.append(new RunEvent.RunFinished(status.name(), reason));
+    try {
+      events.append(new RunEvent.RunFinished(status.name(), reason));
+    } catch (AuditUnavailableException e) {
+      return new RunOutcome(runId, RunStatus.FAILED, "audit log unavailable; the run stopped and "
+          + "its log is incomplete: " + e.getMessage(), finalStates);
+    }
     return new RunOutcome(runId, status, reason, finalStates);
   }
 
@@ -383,6 +553,7 @@ public final class WorkflowEngine {
     private ApprovalGateway approvals = request -> {
       throw new IllegalStateException("No approval gateway configured for " + request.nodeId());
     };
+    private AmendmentValidator amendmentValidator = AmendmentValidator.NONE;
     private Clock clock = Clock.systemUTC();
 
     private Builder() {}
@@ -414,6 +585,11 @@ public final class WorkflowEngine {
 
     public Builder approvals(ApprovalGateway value) {
       this.approvals = value;
+      return this;
+    }
+
+    public Builder amendmentValidator(AmendmentValidator value) {
+      this.amendmentValidator = value;
       return this;
     }
 

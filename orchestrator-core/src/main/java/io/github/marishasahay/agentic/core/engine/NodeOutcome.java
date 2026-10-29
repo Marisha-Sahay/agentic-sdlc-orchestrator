@@ -18,7 +18,9 @@ record NodeOutcome(
   enum Kind {
     SUCCEEDED,
     FAILED,
-    STOPPED
+    STOPPED,
+    /** Validated work was thrown away because its inputs changed while it ran; run it again. */
+    DISCARDED
   }
 
   static NodeOutcome failed(String nodeId, String reason) {
@@ -27,5 +29,9 @@ record NodeOutcome(
 
   static NodeOutcome stopped(String nodeId, String reason) {
     return new NodeOutcome(nodeId, Kind.STOPPED, reason, Map.of(), Set.of());
+  }
+
+  static NodeOutcome discarded(String nodeId, String reason) {
+    return new NodeOutcome(nodeId, Kind.DISCARDED, reason, Map.of(), Set.of());
   }
 }

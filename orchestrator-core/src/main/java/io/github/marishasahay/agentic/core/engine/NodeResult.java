@@ -15,15 +15,21 @@ import java.util.Map;
  * @param changes proposed workspace changes
  * @param decisions decisions with rationale
  * @param summary one-paragraph summary for reviewers
+ * @param approvalRequirements reasons the task itself declares for a human acceptance decision,
+ *     code to message (e.g. {@code degraded-verification}); a task can add reasons, never
+ *     remove the ones the node configuration or policy require
  */
 public record NodeResult(
-    Map<String, String> outputs, ChangeSet changes, List<Decision> decisions, String summary) {
+    Map<String, String> outputs, ChangeSet changes, List<Decision> decisions, String summary,
+    Map<String, String> approvalRequirements) {
 
   public NodeResult {
     outputs = Map.copyOf(outputs);
     changes = changes == null ? ChangeSet.empty() : changes;
     decisions = List.copyOf(decisions);
     summary = summary == null ? "" : summary;
+    approvalRequirements = approvalRequirements == null ? Map.of()
+        : Map.copyOf(approvalRequirements);
   }
 
   public static Builder builder() {
@@ -36,6 +42,7 @@ public record NodeResult(
     private final List<FileChange> changes = new ArrayList<>();
     private final List<Decision> decisions = new ArrayList<>();
     private String summary = "";
+    private final Map<String, String> approvalRequirements = new LinkedHashMap<>();
 
     private Builder() {}
 
@@ -64,8 +71,21 @@ public record NodeResult(
       return this;
     }
 
+    /**
+     * Declares that accepting this result needs a human decision.
+     *
+     * @param code stable reason code a scripted decision must cover
+     * @param message what the reviewer is accepting
+     * @return this builder
+     */
+    public Builder requireApproval(String code, String message) {
+      approvalRequirements.put(code, message);
+      return this;
+    }
+
     public NodeResult build() {
-      return new NodeResult(outputs, new ChangeSet(changes), decisions, summary);
+      return new NodeResult(outputs, new ChangeSet(changes), decisions, summary,
+          approvalRequirements);
     }
   }
 }

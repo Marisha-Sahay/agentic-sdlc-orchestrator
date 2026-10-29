@@ -32,6 +32,10 @@ import java.util.Map;
     @JsonSubTypes.Type(value = RunEvent.NodeSkipped.class, name = "NodeSkipped"),
     @JsonSubTypes.Type(value = RunEvent.NodeInvalidated.class, name = "NodeInvalidated"),
     @JsonSubTypes.Type(value = RunEvent.GraphExpanded.class, name = "GraphExpanded"),
+    @JsonSubTypes.Type(value = RunEvent.AttemptDiscarded.class, name = "AttemptDiscarded"),
+    @JsonSubTypes.Type(value = RunEvent.AmendmentRejected.class, name = "AmendmentRejected"),
+    @JsonSubTypes.Type(value = RunEvent.RollbackFailed.class, name = "RollbackFailed"),
+    @JsonSubTypes.Type(value = RunEvent.BudgetReset.class, name = "BudgetReset"),
     @JsonSubTypes.Type(value = RunEvent.StopRequested.class, name = "StopRequested"),
     @JsonSubTypes.Type(value = RunEvent.RunFinished.class, name = "RunFinished")
 })
@@ -58,11 +62,19 @@ public sealed interface RunEvent {
       implements RunEvent {}
 
   /**
-   * A stopped run was resumed from its log.
+   * A stopped run was resumed from its log, after the log's hash chain, the persisted artifacts
+   * and the run identity were verified.
    *
    * @param restoredNodes nodes recovered as already succeeded
+   * @param checkpoint accepted checkpoint the workspace was restored to ({@code baseline} if no
+   *     accepted change exists)
+   * @param discardedArtifacts artifact versions persisted by attempts that were never accepted
+   *     (interrupted between publication and success); they are not restored
+   * @param attemptsUsed attempts already spent, carried into the attempt budget
+   * @param agentCallsUsed model calls already spent, carried into the call budget
    */
-  record RunResumed(int restoredNodes) implements RunEvent {}
+  record RunResumed(int restoredNodes, String checkpoint, List<String> discardedArtifacts,
+      int attemptsUsed, int agentCallsUsed) implements RunEvent {}
 
   /**
    * An attempt began.
@@ -84,10 +96,11 @@ public sealed interface RunEvent {
    * @param gate gate name
    * @param passed outcome
    * @param evidence tool output tail or explanation
+   * @param treeSha git tree the gate evaluated (exit gates on a workspace), or null
    */
   record GateEvaluated(
-      String nodeId, int attempt, String phase, String gate, boolean passed, String evidence)
-      implements RunEvent {}
+      String nodeId, int attempt, String phase, String gate, boolean passed, String evidence,
+      String treeSha) implements RunEvent {}
 
   /**
    * Policy rules produced findings for a proposal.
@@ -122,22 +135,42 @@ public sealed interface RunEvent {
    * A human checkpoint was reached.
    *
    * @param nodeId node
-   * @param reasons why approval is required
+   * @param reasons why a decision is required
+   * @param kind {@code AUTHORIZATION} (before execution) or {@code ACCEPTANCE} (after gates)
+   * @param reasonCodes stable reason codes
+   * @param proposalSha hash of the exact proposal under review
+   * @param treeSha validated git tree (acceptance only), or null
    */
-  record ApprovalRequested(String nodeId, List<String> reasons) implements RunEvent {}
+  record ApprovalRequested(String nodeId, List<String> reasons, String kind,
+      List<String> reasonCodes, String proposalSha, String treeSha) implements RunEvent {}
 
   /**
-   * A reviewer decided.
+   * A reviewer decided. The decision applies to exactly {@code proposalSha} (and
+   * {@code treeSha}); the engine re-asks for anything else.
    *
    * @param nodeId node
    * @param approved decision
-   * @param reviewer who
+   * @param reviewer who, including how the decision was made (human or scripted demonstration)
    * @param comment rationale
    * @param amendedArtifacts keys the reviewer edited
+   * @param kind {@code AUTHORIZATION} or {@code ACCEPTANCE}
+   * @param proposalSha hash of the proposal decided on
+   * @param treeSha validated git tree decided on (acceptance only), or null
    */
   record ApprovalResolved(
       String nodeId, boolean approved, String reviewer, String comment,
-      List<String> amendedArtifacts) implements RunEvent {}
+      List<String> amendedArtifacts, String kind, String proposalSha, String treeSha)
+      implements RunEvent {}
+
+  /**
+   * A reviewer amendment failed validation and was not applied.
+   *
+   * @param nodeId node whose approval carried the amendment
+   * @param keys amended artifact keys
+   * @param problems why the amendment was refused
+   */
+  record AmendmentRejected(String nodeId, List<String> keys, List<String> problems)
+      implements RunEvent {}
 
   /**
    * A new artifact version was stored.
@@ -199,6 +232,27 @@ public sealed interface RunEvent {
       implements RunEvent {}
 
   /**
+   * Restoring the accepted state failed: the workspace is quarantined and the run safe-stops.
+   *
+   * @param nodeId node whose attempt was being undone
+   * @param toCheckpoint checkpoint that could not be restored
+   * @param originalFailure what made the rollback necessary
+   * @param rollbackError why the rollback failed
+   */
+  record RollbackFailed(String nodeId, String toCheckpoint, String originalFailure,
+      String rollbackError) implements RunEvent {}
+
+  /**
+   * An attempt that passed its gates was not accepted because its inputs or its base revision
+   * changed while it ran; its workspace changes were rolled back and nothing was published.
+   *
+   * @param nodeId node
+   * @param attempt attempt number
+   * @param reason what changed
+   */
+  record AttemptDiscarded(String nodeId, int attempt, String reason) implements RunEvent {}
+
+  /**
    * A node's outputs were accepted.
    *
    * @param nodeId node
@@ -206,10 +260,13 @@ public sealed interface RunEvent {
    * @param attempts attempts used
    * @param inputs consumed artifact key to full SHA-256
    * @param outputs produced artifact key to version ref
+   * @param checkpoint workspace checkpoint created for this acceptance, or null if the node
+   *     changed no files; this event is the commit point that makes it the accepted state
+   * @param treeSha git tree the node's gates validated and that was accepted, or null
    */
   record NodeSucceeded(
       String nodeId, String stage, int attempts, Map<String, String> inputs,
-      Map<String, String> outputs) implements RunEvent {}
+      Map<String, String> outputs, String checkpoint, String treeSha) implements RunEvent {}
 
   /**
    * A node gave up.
@@ -250,6 +307,16 @@ public sealed interface RunEvent {
       return byNode;
     }
   }
+
+  /**
+   * An operator explicitly reset the budgets of a resumed run.
+   *
+   * @param authorizedBy who authorized the reset
+   * @param attemptsDiscarded attempts that no longer count against the budget
+   * @param agentCallsDiscarded model calls that no longer count against the budget
+   */
+  record BudgetReset(String authorizedBy, int attemptsDiscarded, int agentCallsDiscarded)
+      implements RunEvent {}
 
   /**
    * Safe-stop engaged: no new work is scheduled, running attempts finish.

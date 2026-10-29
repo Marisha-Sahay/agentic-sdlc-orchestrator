@@ -42,7 +42,8 @@ class EventLogTest {
   void detectsTamperingWithAnyEarlierEvent() throws Exception {
     Path file = tmp.resolve("events.jsonl");
     EventLog log = new EventLog("run-1", file, Clock.systemUTC());
-    log.append(new RunEvent.ApprovalResolved("release", false, "carol", "not yet", List.of()));
+    log.append(new RunEvent.ApprovalResolved("release", false, "carol", "not yet", List.of(),
+        "ACCEPTANCE", "proposal-sha", "tree-sha"));
     log.append(new RunEvent.RunFinished("FAILED", "rejected"));
 
     List<String> lines = new ArrayList<>(Files.readAllLines(file, StandardCharsets.UTF_8));
@@ -55,9 +56,9 @@ class EventLogTest {
   @Test
   void reopeningALogContinuesTheChain() {
     Path file = tmp.resolve("events.jsonl");
-    new EventLog("run-1", file, Clock.systemUTC()).append(new RunEvent.RunResumed(0));
+    new EventLog("run-1", file, Clock.systemUTC()).append(new RunEvent.RunResumed(0, "baseline", List.of(), 0, 0));
     EventLog reopened = new EventLog("run-1", file, Clock.systemUTC());
-    EventEnvelope second = reopened.append(new RunEvent.RunResumed(1));
+    EventEnvelope second = reopened.append(new RunEvent.RunResumed(1, "baseline", List.of(), 1, 0));
 
     assertThat(second.seq()).isEqualTo(2);
     assertThat(EventLog.verifyChain(reopened.events())).isEmpty();

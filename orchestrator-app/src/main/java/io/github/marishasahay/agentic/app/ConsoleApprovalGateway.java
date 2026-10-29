@@ -2,7 +2,9 @@ package io.github.marishasahay.agentic.app;
 
 import io.github.marishasahay.agentic.core.approval.ApprovalDecision;
 import io.github.marishasahay.agentic.core.approval.ApprovalGateway;
+import io.github.marishasahay.agentic.core.approval.ApprovalKind;
 import io.github.marishasahay.agentic.core.approval.ApprovalRequest;
+import io.github.marishasahay.agentic.core.approval.ReviewerUnavailableException;
 import io.github.marishasahay.agentic.core.gate.GateResult;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -86,9 +88,16 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
   private void printRequest(ApprovalRequest request) {
     out.println();
     out.println(Ansi.yellow("=".repeat(78)));
-    out.println(Ansi.bold(Ansi.yellow("HUMAN APPROVAL REQUIRED: " + request.nodeId() + " ("
-        + request.stage().name().toLowerCase().replace('_', ' ') + ")")));
+    out.println(Ansi.bold(Ansi.yellow((request.kind() == ApprovalKind.AUTHORIZATION
+        ? "AUTHORIZATION REQUIRED BEFORE EXECUTION: " : "HUMAN APPROVAL REQUIRED: ")
+        + request.nodeId() + " (" + request.stage().name().toLowerCase().replace('_', ' ')
+        + ")")));
     out.println(Ansi.yellow("=".repeat(78)));
+    out.println(Ansi.bold("Decision applies to: ") + "proposal "
+        + request.proposalSha().substring(0, 12)
+        + (request.treeSha() == null ? " (nothing has been written or executed yet)"
+            : ", validated tree " + request.treeSha().substring(0, 12)));
+    request.problems().forEach(p -> out.println(Ansi.red("Previous decision refused: " + p)));
     out.println(Ansi.bold("Why:"));
     request.reasons().forEach(r -> out.println("  - " + r));
     out.println(Ansi.bold("Agent summary:"));
@@ -158,8 +167,8 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
     try {
       String line = in.readLine();
       if (line == null) {
-        throw new IllegalStateException("stdin closed while waiting for a reviewer; use "
-            + "--approvals scripted for unattended runs");
+        throw new ReviewerUnavailableException("stdin closed while waiting for a reviewer; the "
+            + "run pauses and can be resumed");
       }
       return line;
     } catch (IOException e) {

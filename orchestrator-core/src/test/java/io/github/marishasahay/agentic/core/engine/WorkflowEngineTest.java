@@ -180,9 +180,9 @@ class WorkflowEngineTest {
   @Test
   void routesHighImpactChangesToAHumanAndFeedsRejectionsBack() throws Exception {
     GitWorkspace workspace = GitWorkspace.createFrom(null, tmp.resolve("ws"));
-    ScriptedApprovalGateway reviewer = new ScriptedApprovalGateway(
-        ApprovalDecision.approve("alice", "looks good"))
-        .script("migrate", ApprovalDecision.reject("alice", "add an index on code"));
+    ScriptedApprovalGateway reviewer = ScriptedApprovalGateway.failClosed()
+        .script("migrate", ApprovalDecision.reject("alice", "add an index on code"),
+            ApprovalDecision.approve("alice", "looks good"));
     List<List<String>> feedbackSeen = new CopyOnWriteArrayList<>();
     NodeTask migration = ctx -> {
       feedbackSeen.add(ctx.feedback());
@@ -211,10 +211,10 @@ class WorkflowEngineTest {
     AtomicInteger designRuns = new AtomicInteger();
     AtomicInteger implRuns = new AtomicInteger();
     List<Integer> designExecutions = new CopyOnWriteArrayList<>();
-    ScriptedApprovalGateway reviewer = new ScriptedApprovalGateway(
-        ApprovalDecision.approve("bob", "ok"))
+    ScriptedApprovalGateway reviewer = ScriptedApprovalGateway.failClosed()
         .script("design", ApprovalDecision.approveWithAmendments("bob", "links must expire",
-            Map.of("requirements", "shorten urls; links expire after 30 days")));
+            Map.of("requirements", "shorten urls; links expire after 30 days")),
+            ApprovalDecision.approve("bob", "ok"));
     WorkflowGraph graph = WorkflowGraph.of(List.of(
         node("analyse").task(output("requirements", "shorten urls")).build(),
         node("design", "analyse").approval(ApprovalMode.ALWAYS).task(ctx -> {
@@ -237,7 +237,7 @@ class WorkflowEngineTest {
     assertThat(implRuns).hasValue(1);
     assertThat(artifacts.content("code")).contains("expire after 30 days");
     assertThat(artifacts.history("requirements")).extracting(a -> a.producedBy())
-        .containsExactly("analyse", "human:bob");
+        .containsExactly("analyse", "reviewer:bob");
     assertThat(eventsOf(RunEvent.NodeInvalidated.class)).singleElement()
         .satisfies(e -> assertThat(e.nodeId()).isEqualTo("design"))
         .satisfies(e -> assertThat(e.cause()).contains("requirements"));
