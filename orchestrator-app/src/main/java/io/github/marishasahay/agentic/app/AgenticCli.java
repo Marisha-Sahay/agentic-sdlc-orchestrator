@@ -6,6 +6,7 @@ import io.github.marishasahay.agentic.agents.llm.CassetteLlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmMode;
 import io.github.marishasahay.agentic.agents.llm.ModelSettings;
+import io.github.marishasahay.agentic.agents.llm.ThrottledLlmClient;
 import io.github.marishasahay.agentic.core.approval.ApprovalDecision;
 import io.github.marishasahay.agentic.core.approval.ApprovalGateway;
 import io.github.marishasahay.agentic.core.approval.ScriptedApprovalGateway;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -56,6 +58,9 @@ import java.util.stream.Stream;
 public final class AgenticCli {
 
   private final Path repo;
+  /** One quota per API key: primary and fallback clients share these permits. */
+  private final Semaphore modelCallPermits = new Semaphore(Integer.parseInt(
+      System.getenv().getOrDefault("AGENTIC_MAX_CONCURRENT_CALLS", "2")));
 
   private AgenticCli(Path repo) {
     this.repo = repo;
@@ -195,7 +200,7 @@ public final class AgenticCli {
   private LlmClient llm(ModelSettings models, String model, Path cassettes, LlmMode mode) {
     LlmClient live = null;
     if (mode != LlmMode.REPLAY) {
-      live = models.client(model);
+      live = ThrottledLlmClient.withDefaults(models.client(model), modelCallPermits);
     }
     return new CassetteLlmClient(live, cassettes, mode);
   }
