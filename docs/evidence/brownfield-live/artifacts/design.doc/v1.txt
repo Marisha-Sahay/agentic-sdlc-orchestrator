@@ -1,0 +1,91 @@
+# Design
+
+This project enhances the existing URL shortener service by introducing basic click analytics and fixing a critical issue where expired links were incorrectly redirecting due to caching. For every successful redirect, the service will now asynchronously record the timestamp, referrer host, and a coarse user-agent family. A new API endpoint, `/api/v1/links/{code}/stats`, is added to provide aggregated click statistics, including total clicks, the last click time, and daily counts for the past 7 days. The core redirect functionality is modified to store full link metadata in the cache, enabling an explicit check for link expiration on every request, thus ensuring that expired links consistently return an HTTP 410 Gone status, even when cached. Performance of the redirect path is maintained by processing analytics asynchronously.
+
+## Components
+
+| Component | Responsibility | Files |
+|---|---|---|
+| Click | Represents a single click event for persistence and processing. | src/main/java/io/github/marishasahay/shortener/click/Click.java |
+| ClickRepository | Handles persistence and retrieval of click data from the database. | src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java |
+| ClickService | Orchestrates click recording (asynchronously) and retrieval of click statistics. | src/main/java/io/github/marishasahay/shortener/click/ClickService.java |
+| UserAgentParser | Parses user-agent strings to determine coarse user-agent family (browser, bot, other). | src/main/java/io/github/marishasahay/shortener/click/UserAgentParser.java |
+| ClickConfiguration | Wires up beans related to click analytics, including the UserAgentParser and async executor. | src/main/java/io/github/marishasahay/shortener/click/ClickConfiguration.java |
+| LinkStatsResponse | Defines the structure of the response for the link statistics API. | src/main/java/io/github/marishasahay/shortener/click/LinkStatsResponse.java |
+| DailyClickCount | Represents a daily click count within the LinkStatsResponse. | src/main/java/io/github/marishasahay/shortener/click/DailyClickCount.java |
+| LinkStatsApiController | Exposes the GET /api/v1/links/{code}/stats endpoint. | src/main/java/io/github/marishasahay/shortener/click/LinkStatsApiController.java |
+| AsyncConfiguration | Enables Spring's asynchronous method execution and configures a bounded ThreadPoolTaskExecutor for click recording. | src/main/java/io/github/marishasahay/shortener/config/AsyncConfiguration.java |
+| UrlShortenerApplication | Main application class, modified to enable asynchronous processing. | src/main/java/io/github/marishasahay/shortener/UrlShortenerApplication.java |
+| pom.xml | Project Object Model, modified to add 'ua-parser-java' dependency. | pom.xml |
+| OpenAPI Contract | Documents the new GET /api/v1/links/{code}/stats endpoint and its schemas. | api/openapi.yaml |
+| CacheConfiguration | Configures the redirect cache to store full 'Link' objects instead of just target URLs. | src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java |
+| LinkResolver | Core component for resolving short codes to target URLs, modified to store and retrieve 'Link' objects from cache and explicitly check 'expiresAt' on every resolution. | src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java |
+| RedirectController | Handles short URL redirects, modified to inject ClickService and record clicks asynchronously for every successful redirect. | src/main/java/io/github/marishasahay/shortener/link/RedirectController.java |
+| Flyway Migration | Database migration script to create the 'clicks' table. | src/main/resources/db/migration/V2__create_clicks_table.sql |
+
+## Data model
+
+CREATE TABLE clicks (
+    id BIGSERIAL PRIMARY KEY,
+    link_id BIGINT NOT NULL,
+    clicked_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    referrer_host VARCHAR(255),
+    user_agent_family VARCHAR(50) NOT NULL,
+    CONSTRAINT fk_link
+        FOREIGN KEY (link_id)
+        REFERENCES links (id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_clicks_link_id ON clicks (link_id);
+CREATE INDEX idx_clicks_clicked_at ON clicks (clicked_at);
+CREATE INDEX idx_clicks_link_id_clicked_at ON clicks (link_id, clicked_at DESC);
+
+## Decisions
+
+### Asynchronous Click Recording
+
+**Decision:** Implement click recording asynchronously using Spring's `@Async` with a `ThreadPoolTaskExecutor` configured with a bounded queue.
+
+**Rationale:** This choice directly addresses NFR-1 by decoupling click recording from the critical redirect path, ensuring minimal latency impact on redirects. A `ThreadPoolTaskExecutor` with a bounded queue prevents unbounded memory growth under high load, aligning with the 'best effort' principle for analytics data. If the queue is full, the click event will be logged as an error and dropped, prioritizing redirect performance over analytics completeness.
+
+**Alternatives:** Synchronous recording: Rejected due to NFR-1 (performance impact).; External Message Queue (e.g., Kafka, RabbitMQ): Rejected for simplicity and added operational overhead for basic analytics. While more robust for high-volume, guaranteed delivery, it's considered overkill for the current requirements and 'best effort' nature.
+
+### User-Agent Parsing Library
+
+**Decision:** Use the `ua-parser-java` library for determining the coarse user-agent family.
+
+**Rationale:** This choice addresses Q-2 by providing a well-maintained, lightweight solution for user-agent classification. It reduces custom regex complexity and improves accuracy compared to simpler heuristics, ensuring reasonable accuracy and maintainability.
+
+**Alternatives:** Custom regex-based logic: Rejected due to complexity, maintenance burden, and potential for inaccuracies as user-agent strings evolve.; Simpler heuristics (e.g., checking for 'bot' substring): Rejected as it would be less accurate and robust than a dedicated library.
+
+### Expired Link Handling with Cache
+
+**Decision:** Modify `LinkResolver` to store full `Link` objects (containing `expiresAt`) in the Caffeine cache. On every `resolve` call, explicitly check the `expiresAt` field of the cached `Link` object against the current time.
+
+**Rationale:** This choice directly addresses FR-3 and NFR-4 by ensuring that expired links consistently return HTTP 410 Gone, even when present in the cache. It centralizes the expiration logic within the `LinkResolver`, making it robust and easy to reason about. The existing `Cache-Control: no-store` header on redirects means browsers won't cache the redirect itself, but the service's internal cache still needs this explicit check.
+
+**Alternatives:** Cache-aside with TTL matching `expiresAt`: Rejected because `expiresAt` can be dynamic and setting individual TTLs for each cache entry based on `expiresAt` can be complex and less reliable than an explicit check, especially if `expiresAt` is updated or is null (never expires).; Proactive cache invalidation on expiry: Rejected due to complexity. Requires a background job to scan for expired links and invalidate cache entries, which adds latency to the 410 response (NFR-4 requires within 1 minute) and introduces potential race conditions. An explicit check is simpler and more reliable.
+
+### Daily Click Count Time Zone
+
+**Decision:** Aggregate daily click counts using UTC for daily boundaries.
+
+**Rationale:** This choice addresses Q-4 by providing a consistent, unambiguous global standard for time-series data. It simplifies analysis and avoids issues with daylight saving changes or server time zone configurations, ensuring data integrity and ease of interpretation.
+
+**Alternatives:** Server's local time zone: Rejected due to inconsistency across different deployment environments and potential for confusion with daylight saving.; Client's requested time zone: Rejected due to added complexity for the API (requiring a time zone header) and potential for inconsistent data if different clients request different time zones.
+
+### Click Data Retention
+
+**Decision:** Store raw click events in the `clicks` table indefinitely for now, but monitor storage growth. If storage becomes an issue, implement a policy to archive or purge raw click records older than 90 days, while retaining aggregated daily counts for longer periods (e.g., 1 year or indefinitely).
+
+**Rationale:** This choice balances the immediate need for detailed analytics with potential future storage cost concerns (Risk: Storage cost increase). NFR-3 only requires 7 days of *daily counts*, not raw clicks. This approach provides flexibility to adapt to future analytical requirements while having a plan for managing data volume.
+
+**Alternatives:** No retention policy: Rejected as it leads to unbounded storage growth and potential performance degradation over time.; Immediate aggregation and discard of raw clicks: Rejected as it limits future analytical capabilities (e.g., hourly trends, specific referrer analysis beyond host) if requirements evolve.
+
+## Risks and trade-offs
+
+- Performance degradation of the redirect service due to synchronous analytics recording: Mitigated by implementing click recording as an asynchronous operation using Spring's @Async with a dedicated, bounded ThreadPoolTaskExecutor, decoupling it from the critical redirect path. P99 latency of GET /{code} will be closely monitored.
+- Data integrity issues with click counts or timestamps: Mitigated by using robust JDBC operations for transactional writes for click recording. For asynchronous processing, Spring's default error handling for @Async methods will be relied upon, with monitoring for any failures. Data consistency will be regularly audited.
+- Security vulnerability due to user-agent parsing library: Mitigated by choosing 'ua-parser-java', a well-vetted and actively maintained third-party library. Code reviews will focus on input sanitization and error handling around user-agent processing, and the library will be kept updated.
+- Cache invalidation logic for expired links is complex and introduces new bugs: Mitigated by modifying the LinkResolver to store full 'Link' objects in the Caffeine cache and explicitly checking the 'expiresAt' field of the cached 'Link' object on every request. This simplifies the cache logic by centralizing the expiry check. Thorough unit and integration tests will cover edge cases.
+- Storage cost increase due to click data: Mitigated by monitoring storage growth for the 'clicks' table. If necessary, a future iteration will implement data archiving or purging policies for older, raw click records, retaining only aggregated daily counts for long-term trends.

@@ -1,7 +1,7 @@
 # Key methods
 
 The methods that carry the design, one line each, grouped by module and class. Start with
-`WorkflowEngine.schedule`, `NodeRunner.attempt` and `NodeRunner.gateApproveAndAccept`: together
+`WorkflowEngine.schedule`, `NodeRunner.attempt` and `NodeRunner.validateApproveAndPublish`: together
 they are the orchestration and governance model.
 
 ## orchestrator-core
@@ -25,7 +25,7 @@ they are the orchestration and governance model.
 | Method | What it does |
 |---|---|
 | `WorkflowEngine.run` | Starts a run: logs `RunStarted` with settings and the requirement hash, then schedules the graph. |
-| `WorkflowEngine.resume` | Rebuilds accepted nodes, artifacts, expansions and execution counters from the event log, resets the workspace to the last checkpoint, and continues. |
+| `WorkflowEngine.resume` | Verifies the hash chain, every artifact hash and the run identity; restores only nodes whose success event was written and their artifacts; resets the workspace to the last accepted checkpoint (or baseline); carries budgets over unless a reset is authorized; continues. |
 | `WorkflowEngine.schedule` | The scheduler loop: enforces stop conditions, skips blocked nodes, dispatches ready nodes in parallel on virtual threads, and processes outcomes. |
 | `WorkflowEngine.onOutcome` | Applies a node's result on the scheduler thread: success (expand, then re-plan), failure (count, failure threshold) or stop (back to pending). |
 | `WorkflowEngine.expand` | Replaces a node's earlier expansion with a fresh one built from the stored artifacts, and logs `GraphExpanded`. |
@@ -38,10 +38,13 @@ they are the orchestration and governance model.
 | `NodeRunner.run` | Runs one node through its governed lifecycle with the next execution number; any engine error becomes a logged node failure. |
 | `NodeRunner.runGoverned` | Entry gates, then bounded attempts of the primary strategy, then the fallback, then fail; feeds each rejection forward as feedback. |
 | `NodeRunner.attempt` | One attempt: run the task with a timeout, evaluate policy on the proposal, then lock and gate if the node changes files or its gates read the workspace. |
-| `NodeRunner.gateApproveAndAccept` | Applies changes, runs exit gates (rolling back on failure), asks for approval if required (rolling back on rejection), commits a checkpoint. |
+| `NodeRunner.attempt` | Runs the task on a snapshot, evaluates policy against the base revision, and asks for authorization before anything execution-sensitive is written. |
+| `NodeRunner.validateApproveAndPublish` | Under the lock: rejects stale proposals, applies, runs exit gates on tree T, asks for acceptance of T, re-checks T and input freshness, commits and publishes; restores the accepted checkpoint on every failure path. |
+| `NodeRunner.publish` | Persists artifacts, then their events, then `NodeSucceeded` (the commit point); withdraws stored versions if anything fails. |
+| `NodeRunner.requestDecision` | Asks the gateway, validates amendments (re-asks, bounded), and turns gateway failures into a paused run, never an approval. |
 | `NodeRunner.accept` | Publishes outputs and reviewer amendments as artifact versions, records decisions with lineage, logs `NodeSucceeded` with consumed input hashes. |
-| `NodeRunner.approvalReasons` | Collects why a human must decide: mandatory sign-off and/or policy `REQUIRE_APPROVAL` findings. |
-| `NodeRunner.rollback` | Resets the workspace to the attempt's starting checkpoint and logs `RollbackPerformed`. |
+| `NodeRunner.acceptanceReasons` | Reason codes for acceptance: mandatory sign-off, policy `REQUIRE_APPROVAL` findings, task-declared reasons such as `degraded-verification`. |
+| `NodeRunner.restore` | Resets the workspace to the accepted checkpoint and logs why; if that fails, logs `RollbackFailed`, quarantines the workspace and stops the run. |
 | `NodeRunner.executeWithTimeout` | Runs a task on a virtual thread and cancels it if it exceeds the node's per-attempt timeout. |
 | `NodeRunner.restoreExecutions` | Seeds per-node execution counters on resume so replay keys stay unique and stable. |
 | `NodeContext.input` | Reads a required artifact and records exactly which version the node consumed (lineage and re-planning). |
@@ -74,12 +77,15 @@ they are the orchestration and governance model.
 | `WorkspaceScopeRule.evaluate` | Blocks writes outside the allow-list, to protected governance files (CI, Checkstyle, policy) and path traversal. |
 | `SecretLeakRule.evaluate` | Blocks keys, tokens, private keys and hard-coded passwords in files and artifacts. |
 | `SchemaMigrationRule.evaluate` | Blocks edits to applied migrations; routes new migrations to a human. |
-| `SensitiveFileRule.evaluate` | Requires approval for build-file (dependencies), API-contract and security-config changes. |
+| `SensitiveFileRule.evaluate` | Build file: authorization before execution; API contract and security config: acceptance. |
+| `BuildIntegrityRule.evaluate` | Blocks changes to test, coverage, Checkstyle and skip settings in `pom.xml`. |
+| `StageWriteScopeRule.evaluate` | Blocks writes outside what the node's stage may change. |
 | `ChangeSizeRule.evaluate` | Requires approval when a change touches more lines than the limit. |
-| `CommandGate.evaluate` | Runs a tool (e.g. `mvn verify`) in the workspace with a timeout; exit code decides, the output tail is the evidence. |
+| `CommandGate.evaluate` | Runs a tool (e.g. `mvn verify`) in a `CommandSandbox` with a timeout; exit code decides, the output tail and the sandbox description are the evidence. |
+| `DockerSandbox.start` | Throwaway container: no network, CPU/memory/pids limits, workspace and a dependency cache only, PostgreSQL sidecar on a private network. |
 | `RequiredArtifactsGate.evaluate` | Checks that required artifacts exist and are non-blank (stage contracts). |
 | `GateContext.output` | An artifact from the current attempt, falling back to the accepted store. |
-| `ScriptedApprovalGateway.decide` | Replays pre-recorded reviewer decisions per node for unattended runs, recording every request. |
+| `ScriptedApprovalGateway.decide` | Replays demonstration decisions per node, only for requests of their kind whose reasons they cover; otherwise throws `ReviewerUnavailableException`. |
 | `ApprovalDecision.approveWithAmendments` | An approval that also replaces artifacts, which triggers re-planning of their consumers. |
 
 ### Workspace (`core/workspace`)
@@ -143,7 +149,8 @@ they are the orchestration and governance model.
 | `SecurityReviewAgent.execute` | Combines authoritative scanner findings with an advisory model review of the diff. |
 | `SecurityReviewAgent.scan` | Pattern scanner over changed main sources (SQL concatenation, process execution, wildcard CORS, weak randomness, deserialization). |
 | `VerifyAndRepairAgent.execute` | First attempt proposes nothing so the full build runs; later attempts ask the model for the smallest gated fix. |
-| `ReleaseAgent.execute` | Produces the patch, the traceability matrix and release notes with risks and a rollback plan. |
+| `FinalValidationTask.execute` | Pins the final tree and marks upstream evidence stale if code changed after it; its gates re-run every deterministic check on that tree. |
+| `ReleaseAgent.execute` | Produces the patch, traceability and release notes with the validation evidence for the validated tree; degraded verification adds a waiver reason. |
 | `ReleaseAgent.traceability` | Requirement → task → file matrix from the plan; flags requirements no task implements. |
 
 ### Agent gates (`agents/gates`)
@@ -164,7 +171,9 @@ they are the orchestration and governance model.
 
 | Method | What it does |
 |---|---|
-| `AgenticCli.main` | Dispatches `run`, `resume`, `stop`, `report`, `verify-log`, `metrics` and `list`. |
+| `AgenticCli.main` | Dispatches `run`, `resume`, `stop`, `report`, `verify-log`, `metrics`, `list`, `check-evidence`, `publish-evidence` and `warmup-sandbox`. |
+| `ApprovalModes.resolve` | Chooses the reviewer, failing closed: no terminal and no `--approvals` refuses to start; unknown modes are rejected. |
+| `EvidenceCheck.check` | Verifies saved evidence: chain, artifact hashes, success, release on the validated tree, patch. |
 | `AgenticCli.run` | Wires a run: scenario, model mode, workspace, event log, policy, approvals; Ctrl-C triggers a safe stop; writes report and patch. |
 | `AgenticCli.llm` | Builds the cassette-wrapped model client for live, record or replay mode. |
 | `AgenticCli.approvals` | Interactive console reviewer, or a scripted reviewer built from the scenario file. |
@@ -174,7 +183,7 @@ they are the orchestration and governance model.
 | `AgenticCli.dockerAvailable` | Detects Docker so `verify` can record a degraded profile instead of failing silently. |
 | `WorkflowTemplates.build` | Builds the SDLC graph for a scenario: brownfield adds codebase analysis, ambiguous adds clarification. |
 | `WorkflowTemplates.implementationTasks` | The plan's expansion: one gated coder node per planned task, with fallback model and mapped dependencies. |
-| `BuildCommands.fullVerify` | Full `mvn verify`, or the unit-only profile when Docker is unavailable. |
+| `BuildCommands.fullVerify` | Full `mvn verify`, or the explicitly named DEGRADED profile when Docker is unavailable. |
 | `GovernancePolicy.standard` | The change-control policy every run is governed by (scope, secrets, migrations, dependencies, contract, size). |
 | `ConsoleApprovalGateway.decide` | Terminal checkpoint: shows reasons, evidence and diff; approve, reject with feedback, or edit artifacts. |
 | `ConsoleApprovalGateway.edit` | Writes an artifact to a file for the reviewer to edit and stages it as an amendment. |

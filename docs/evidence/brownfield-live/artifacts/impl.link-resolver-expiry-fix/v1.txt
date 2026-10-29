@@ -1,0 +1,2 @@
+Modified CacheConfiguration to store full Link objects in the redirect cache and updated LinkResolver to retrieve and validate these Link objects for expiration. The LinkResolver now explicitly checks the expiresAt field against the current time and throws a LinkExpiredException if the link is past its expiry, both for cached and non-cached links.
+Files: [src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java, src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java]

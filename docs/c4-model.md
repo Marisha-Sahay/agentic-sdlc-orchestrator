@@ -124,7 +124,7 @@ flowchart TB
   subgraph core["orchestrator-core"]
     direction LR
     engine["<b>WorkflowEngine</b><br/>[Component: scheduler]<br/><small>parallel dispatch, joins, skips,<br/>expansion, re-planning, budgets,<br/>resume</small>"]
-    runner["<b>NodeRunner</b><br/>[Component: node lifecycle]<br/><small>entry gates, attempts, policy,<br/>apply, exit gates, approval,<br/>checkpoint / rollback</small>"]
+    runner["<b>NodeRunner</b><br/>[Component: node lifecycle]<br/><small>entry gates, snapshot, policy,<br/>authorization, stale check, apply,<br/>exit gates, acceptance,<br/>checkpoint / rollback</small>"]
     dag["<b>WorkflowGraph</b><br/>[Component: validated DAG]"]
     policy["<b>PolicyEngine + rules</b><br/>[Component: guardrails]<br/><small>BLOCK / REQUIRE_APPROVAL,<br/>fail-closed</small>"]
     gates["<b>Gates</b><br/>[Component]<br/><small>command, required-artifact</small>"]
@@ -210,12 +210,13 @@ sequenceDiagram
     CLI->>T: mvn compile (exit gate)
     CLI->>W: checkpoint commit, or rollback + retry
   end
-  par tests / docs / security review
-    CLI->>M: test author, tech writer, security reviewer
-    CLI->>T: mvn test, docs coverage, scanner
+  par tests then verify then security review
+    CLI->>M: test author (mvn test), bounded repair (mvn verify), security reviewer
+  and docs
+    CLI->>M: tech writer (docs coverage; may only write docs)
   end
-  CLI->>T: mvn verify (ITs on PostgreSQL, Checkstyle, coverage)
-  CLI->>R: release sign-off (patch, traceability, notes)
+  CLI->>T: final validation on tree T: mvn verify, scanner, contract, docs
+  CLI->>R: release sign-off on tree T (patch, traceability, notes, evidence)
   R-->>CLI: approve
   CLI->>L: RunFinished, every step above was logged as events
   CLI->>E: report.html, metrics, release.patch
@@ -242,29 +243,32 @@ sequenceDiagram
   participant EL as EventLog<br/>[component]
 
   EN->>NR: dependencies succeeded: run(node) on a virtual thread
-  NR->>CA: execute(context incl. feedback from earlier attempts)
+  NR->>CA: execute(context: feedback, snapshot of base revision B)
   CA->>AS: read plan, design, contract (versions recorded)
   CA->>GM: structured prompt, reply must match CodeProposal
-  CA-->>NR: proposal: file changes, decisions
-  NR->>PE: evaluate proposal (nothing written yet)
+  CA-->>NR: proposal P: file changes, decisions
+  NR->>PE: evaluate P against B (nothing written yet)
   alt BLOCK
     NR->>EL: PolicyEvaluated, AttemptFailed
     NR->>NR: retry with findings as feedback
-  else allowed
-    NR->>GW: lock, apply files
-    NR->>MV: mvn compile
-    alt gate fails
-      NR->>GW: rollback to checkpoint
-      NR->>EL: GateEvaluated (FAIL), RollbackPerformed, AttemptFailed
-      NR->>NR: retry with compiler output as feedback
-    else gate passes
-      opt policy REQUIRE_APPROVAL (e.g. new migration)
-        NR->>RV: reasons, diff, gate evidence
-        RV-->>NR: approve / reject / amend
-      end
-      NR->>GW: checkpoint commit, unlock
-      NR->>EL: CheckpointCreated, ArtifactProduced, NodeSucceeded
+  else build file changed (REQUIRE_AUTHORIZATION)
+    NR->>RV: authorize P (preview diff; nothing written or built)
+    RV-->>NR: authorize / refuse
+  end
+  NR->>GW: lock; files of P changed since B? reject as stale
+  NR->>GW: apply P, tree hash T
+  NR->>MV: mvn compile on T
+  alt gate fails
+    NR->>GW: rollback to checkpoint
+    NR->>EL: GateEvaluated (FAIL, T), RollbackPerformed, AttemptFailed
+    NR->>NR: retry with compiler output as feedback
+  else gate passes
+    opt REQUIRE_APPROVAL (e.g. new migration)
+      NR->>RV: accept P on T (reasons, diff, gate evidence)
+      RV-->>NR: approve / reject / amend (amendments validated)
     end
+    NR->>GW: still T and inputs current? checkpoint commit, unlock
+    NR->>EL: CheckpointCreated, ArtifactProduced, NodeSucceeded (commit point)
   end
   NR-->>EN: outcome + consumed input hashes
   EN->>EN: expand graph, invalidate stale consumers, schedule next

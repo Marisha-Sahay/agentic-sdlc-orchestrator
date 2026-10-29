@@ -37,6 +37,12 @@ programmer; architecture decisions, scope and final review were mine.
 | 16 | A commit went in while a test was red (the pipeline status came from `tail`, not Maven) | Amended before anything was pushed; build checks now use Maven's exit code. |
 | 17 | The baseline keeps one known defect (cached expiry) | Deliberate and documented, so the brownfield bug fix is a real fix to real code, not a toy. |
 | 18 | The assessment brief is marked internal | Not committed (`*.pdf` ignored); requirements restated in my own words in [requirements.md](requirements.md). |
+| 19 | Review: approval came after `apply` and the build, so a modified `pom.xml` ran before anyone approved it | Split authorization (before execution) from acceptance (after gates); both bound to the proposal hash, acceptance to the tree hash; gate settings in `pom.xml` blocked outright ([ADR-0016](adr/0016-authorization-acceptance-and-tree-bound-evidence.md)). |
+| 20 | Review: the scripted gateway approved anything unscripted, and runs without a terminal fell back to it | Fail closed: no default decision, decisions name the reasons they cover, unknown modes rejected, no terminal means no run. |
+| 21 | The final summary claimed three live recorded scenarios; only drill evidence existed | Corrected. The committed evidence is labelled as hand-authored fixtures; live status is reported separately. |
+| 22 | "Record every redirect" vs "no noticeable latency" | Raised as an open question in the spec and decided at design review as best effort with counted loss ([ADR-0017](adr/0017-best-effort-click-analytics.md)), instead of quietly claiming every click is recorded. |
+| 23 | Execution isolation for generated code | Environment scrubbing always; a Docker sandbox with no network and a PostgreSQL sidecar as an opt-in; the host Docker socket is never mounted. A git workspace is not claimed as isolation. |
+| 24 | Where the final service lives | Not a second source tree: v1 stays the stable baseline and the final service is v1 plus the brownfield run's released patch (`tools/final-service.sh`). |
 
 ## What AI was not trusted with
 - Deciding that work is done: only gates and humans do that.

@@ -1,0 +1,9 @@
+Two changes to the existing URL shortener service:
+
+1. Click analytics (enhancement). Record every successful redirect - timestamp, referrer host
+   and a coarse user-agent family (browser, bot, other) - without adding noticeable latency to
+   the redirect. Expose GET /api/v1/links/{code}/stats returning total clicks, the time of the
+   last click, and daily click counts for the last 7 days. Do not store raw IP addresses.
+
+2. Bug fix (issue #1). An expired link keeps redirecting while it is in the redirect cache.
+   Once a link's expiresAt has passed, GET /{code} must return 410 Gone even if it was cached.

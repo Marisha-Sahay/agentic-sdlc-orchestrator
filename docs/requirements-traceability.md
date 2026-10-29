@@ -11,7 +11,7 @@ where, and the evidence. Status: **complete** (implemented and verified as state
 |---|---|---|---|
 | D1 | Runnable prototype | complete | `mvn verify`; `./agentic run <scenario>`; CI replays all four scenarios |
 | D2 | Architecture overview | complete | [architecture.md](architecture.md), [c4-model.md](c4-model.md), [ADRs](adr) |
-| D3 | Greenfield, brownfield, ambiguous scenarios with decomposition, orchestration, validation | **partial**: all three run end to end with real gates and builds, but on hand-authored model replies; live-model runs are not part of the evidence (see [scenarios](scenarios/README.md)) | [greenfield](evidence/greenfield), [brownfield](evidence/brownfield), [ambiguous](evidence/ambiguous) |
+| D3 | Greenfield, brownfield, ambiguous scenarios with decomposition, orchestration, validation | **partial**: all three run end to end with real gates and builds on hand-authored model replies; one live brownfield run paused fail-closed before release ([live.md](scenarios/live.md)) | [greenfield](evidence/greenfield), [brownfield](evidence/brownfield), [ambiguous](evidence/ambiguous) |
 | D4 | Setup instructions | complete | [README](../README.md#quickstart) |
 | D5 | Testing approach, limitations, trade-offs | complete | [testing.md](testing.md), [risks-and-limitations.md](risks-and-limitations.md) |
 
@@ -46,4 +46,4 @@ where, and the evidence. Status: **complete** (implemented and verified as state
 | Privacy: no IP or user-agent string | complete | `storesOnlyTheReferrerHostAndAnAgentFamilyNeverAnIpOrUserAgent` |
 | Consistent validation and errors | complete | `LinkWebLayerTest`, `failedRedirectsAreNotCountedAndTheStatisticsWindowIsValidated` |
 | Migrations, contract, docs | complete | Flyway V1/V2 in ITs; `ContractConformanceIT`; final-validation docs and contract gates |
-| 2,000 redirects/s with p99 < 50 ms (ambiguous scenario's demonstration answer) | **not verified as a production claim**: one local measurement, see [testing.md](testing.md#load-test) | `tools/loadtest/redirect-load.sh` |
+| 2,000 redirects/s with p99 < 50 ms (ambiguous scenario's demonstration answer) | **not verified for a deployment**: one laptop measurement of 40,779 cached redirects/s, p99 9 ms ([testing.md](testing.md#load-test)) | `tools/loadtest/redirect-load.sh` |

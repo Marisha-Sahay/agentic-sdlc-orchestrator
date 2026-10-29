@@ -1,0 +1,393 @@
+openapi: 3.1.0
+info:
+  title: URL Shortener API
+  version: 1.0.0
+  description: |
+    Creates short links and redirects short codes to their target URLs.
+
+    All errors are RFC 9457 problem documents (`application/problem+json`). `type` is omitted
+    when it is `about:blank`; `instance` is the request path. Operational endpoints
+    (`/actuator/health`, `/actuator/info`, `/actuator/metrics`) are not part of this contract.
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /api/v1/links:
+    post:
+      operationId: createLink
+      summary: Create a short link
+      description: |
+        Creates a link with a random 7-character base62 code, or with `customAlias` as the code.
+        Rate limited per client IP (default 20 requests per minute, token bucket).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLinkRequest'
+            examples:
+              generated:
+                value:
+                  url: https://example.com/some/long/path
+              customAliasWithExpiry:
+                value:
+                  url: https://example.com/launch
+                  customAlias: launch-2026
+                  expiresAt: '2026-12-31T23:59:59Z'
+      responses:
+        '201':
+          description: Link created.
+          headers:
+            Location:
+              description: Absolute URL of the link's metadata resource (`{baseUrl}/api/v1/links/{code}`).
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/AliasConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/links/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        description: The short code.
+        schema:
+          type: string
+    get:
+      operationId: getLink
+      summary: Get link metadata
+      description: Returns the link, including expired links. Deleted links are not found.
+      responses:
+        '200':
+          description: The link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      operationId: deleteLink
+      summary: Delete a link
+      description: |
+        Soft-deletes the link and evicts it from the redirect cache. The code is never reused:
+        creating a link with the same alias afterwards returns 409.
+      responses:
+        '204':
+          description: Link deleted.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/links/{code}/stats:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        description: The short code.
+        schema:
+          type: string
+    get:
+      operationId: getLinkStats
+      summary: Get link click statistics
+      description: Returns total clicks, last click timestamp, and daily click counts for the last 7 days.
+      responses:
+        '200':
+          description: Link statistics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkStatsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        description: |
+          The short code. Paths that do not match the pattern are not routed to this operation
+          and return 404.
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{4,32}$'
+    get:
+      operationId: redirect
+      summary: Redirect to the target URL
+      description: |
+        Responds with `302 Found` (not 301) and `Cache-Control: no-store`, so browsers do not
+        cache the redirect and every visit reaches the service.
+      responses:
+        '302':
+          description: Redirect to the target URL.
+          headers:
+            Location:
+              description: The target URL.
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+                const: no-store
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  schemas:
+    CreateLinkRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: |
+            Absolute `http` or `https` URL with a host. Rejected (400) if it contains user info
+            (e.g. `https://bank.com@evil.com`), points at the shortener's own host, or is longer
+            than 2048 characters. Leading and trailing whitespace is trimmed.
+          examples: ['https://example.com/some/long/path']
+        customAlias:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{4,32}$'
+          description: |
+            Optional code to use instead of a generated one. Reserved words (case-insensitive):
+            api, actuator, health, admin, static, assets, public, login, logout, error, favicon,
+            robots, metrics, info, docs, swagger, openapi, www.
+          examples: [launch-2026]
+        expiresAt:
+          type: string
+          format: date-time
+          description: Optional ISO-8601 instant; must be in the future. Stored at microsecond precision.
+          examples: ['2026-12-31T23:59:59Z']
+
+    LinkResponse:
+      type: object
+      required: [code, shortUrl, targetUrl, createdAt, expiresAt]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{4,32}$'
+          examples: [aZ3kP9q]
+        shortUrl:
+          type: string
+          format: uri
+          description: '`{baseUrl}/{code}`'
+          examples: ['http://localhost:8080/aZ3kP9q']
+        targetUrl:
+          type: string
+          format: uri
+          examples: ['https://example.com/some/long/path']
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-01-01T00:00:00Z']
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: '`null` when the link never expires.'
+          examples: [null]
+
+    LinkStatsResponse:
+      type: object
+      required: [totalClicks, dailyCounts]
+      properties:
+        totalClicks:
+          type: integer
+          format: int64
+          description: Total number of successful redirects for this link.
+          minimum: 0
+          examples: [123]
+        lastClickAt:
+          type: [string, 'null']
+          format: date-time
+          description: ISO-8601 instant of the most recent click. `null` if no clicks.
+          examples: ['2023-10-27T10:30:00Z', null]
+        dailyCounts:
+          type: array
+          description: Daily click counts for the last 7 full days, in UTC.
+          items:
+            $ref: '#/components/schemas/DailyClickCount'
+          minItems: 7
+          maxItems: 7
+
+    DailyClickCount:
+      type: object
+      required: [date, count]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Date in YYYY-MM-DD format (UTC).
+          examples: ['2023-10-27']
+        count:
+          type: integer
+          format: int64
+          description: Number of clicks on this date.
+          minimum: 0
+          examples: [5]
+
+    ProblemDetail:
+      type: object
+      description: RFC 9457 problem document.
+      required: [title, status, instance]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Omitted when `about:blank`.
+        title:
+          type: string
+          description: |
+            Short summary. Application errors use: `Invalid request`, `Link not found`,
+            `Link expired`, `Alias already in use`, `Too many requests`,
+            `Short code generation failed`, `Internal server error`. Framework errors (e.g.
+            malformed JSON, unsupported media type) use the HTTP reason phrase.
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+          description: The request path.
+        errors:
+          type: array
+          description: Present on `Invalid request` (400) problems.
+          items:
+            $ref: '#/components/schemas/FieldViolation'
+
+    FieldViolation:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          examples: [url]
+        message:
+          type: string
+          examples: [must not be blank]
+
+  responses:
+    BadRequest:
+      description: |
+        Invalid request: bean validation failure (missing `url`), target URL or alias policy
+        violation, expiry not in the future, or malformed / unparseable JSON.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          examples:
+            validation:
+              value:
+                title: Invalid request
+                status: 400
+                detail: Request validation failed
+                instance: /api/v1/links
+                errors:
+                  - field: url
+                    message: must not be blank
+            policy:
+              value:
+                title: Invalid request
+                status: 400
+                detail: url must not contain user info
+                instance: /api/v1/links
+                errors:
+                  - field: url
+                    message: must not contain user info
+            malformedJson:
+              value:
+                title: Bad Request
+                status: 400
+                detail: Failed to read request
+                instance: /api/v1/links
+    NotFound:
+      description: No active link exists for the code (never created, or deleted).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            title: Link not found
+            status: 404
+            detail: No link exists for code 'aZ3kP9q'
+            instance: /aZ3kP9q
+    Gone:
+      description: The link exists but has expired.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            title: Link expired
+            status: 410
+            detail: The link for code 'aZ3kP9q' has expired
+            instance: /aZ3kP9q
+    AliasConflict:
+      description: The custom alias is already in use (including by a deleted link).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            title: Alias already in use
+            status: 409
+            detail: The alias 'launch-2026' is already in use
+            instance: /api/v1/links
+    UnsupportedMediaType:
+      description: The request body is not `application/json`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    TooManyRequests:
+      description: The client exceeded the link-creation rate limit.
+      headers:
+        Retry-After:
+          description: Seconds until the next request will be accepted (at least 1).
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            title: Too many requests
+            status: 429
+            detail: Rate limit exceeded; retry after 3 seconds
+            instance: /api/v1/links
+    InternalServerError:
+      description: |
+        Unexpected failure, or no unique code could be generated within 5 attempts
+        (`Short code generation failed`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'

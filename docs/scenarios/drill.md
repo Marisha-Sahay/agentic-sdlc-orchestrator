@@ -4,7 +4,7 @@
 
 The drill runs the real brownfield workflow (the same `WorkflowTemplates`, agents, policy, gates
 and Maven builds) with **hand-authored model replies** instead of a live model, and plants one
-fault per control. It needs no API key, takes about 25 seconds, and is deterministic: every run takes the
+fault per control. It needs no API key, takes about 35 seconds, and is deterministic: every run takes the
 same path (same attempts, retries, rollbacks, fallbacks, checkpoints and patch); only wall-clock
 timings such as MTTR vary by milliseconds.
 
@@ -26,16 +26,17 @@ labelled `fixture:hand-authored` in the audit log: nothing pretends to be a mode
 | # | Fault | Control | What happened (from the audit log) |
 |---|---|---|---|
 | 1 | Impact analysis names `link/LinkCache.java`, which does not exist | `impact-grounding` gate against the JavaParser index | Attempt 1 rejected with "no such file in the codebase index"; attempt 2 grounded |
-| 2 | At design sign-off the reviewer adds a requirement (FR-3: deleted links stop redirecting immediately even when cached) | Approval with amendment, then content-hash re-planning | `requirements.spec` v2 stored as `human:scripted-reviewer`; `impact-analysis` invalidated (`e47d5836 -> 58ea1cf3`) together with `design`; both re-ran (execution 2) and design was re-approved |
+| 2 | At design sign-off the reviewer adds a requirement (FR-3: deleted links stop redirecting immediately even when cached) | Approval with a validated amendment, then content-hash re-planning | `requirements.spec` v2 stored as `reviewer:scripted-demo (scenarios/drill.yaml)`; `impact-analysis` invalidated together with `design`; both re-ran (execution 2) and design was re-approved |
 | 3 | The coder edits the applied `V1__create_links.sql` | `schema-migration` policy (BLOCK) | Rejected before anything was written; attempt 2 added `V2__index_links_expires_at.sql`, which policy routed to a human as a schema change |
 | 4 | The coder forgets to create `CachedLink.java` | `maven-compile` gate (real build) | Compile failed; workspace rolled back to the checkpoint; attempt 2 (with the compiler output as feedback) compiled |
 | 5 | The docs model returns `503 UNAVAILABLE` twice | Bounded retries, then fallback strategy | Fallback `TemplateDocsWriter` regenerated the README API reference from the contract; `docs-coverage` gate passed |
 
 Meanwhile the normal path ran for real: the plan expanded into two **parallel** implementation
-tasks; `tests`, `docs` and `security-review` ran in parallel after `integrate` and joined at
-`verify`, which ran the full `mvn verify` (unit tests, Testcontainers integration tests applying
-the new migration on PostgreSQL 17, Checkstyle, the 80% coverage gate); the release node produced
-the patch, traceability matrix and release notes, and waited for sign-off.
+tasks; `docs` ran in parallel with `tests` → `verify` (the full `mvn verify`: unit tests,
+Testcontainers integration tests applying the new migration on PostgreSQL 17, Checkstyle, the 80%
+coverage gate) → `security-review`; `final-validation` re-ran every deterministic check on the
+final tree; the release node produced the patch, traceability matrix and release notes bound to
+that tree and waited for sign-off.
 
 ## Decomposition
 
@@ -53,11 +54,11 @@ flowchart LR
   impl-expiry-index --> integrate
   integrate --> tests
   integrate --> docs
-  integrate --> security-review
   tests --> verify
-  docs --> verify
-  security-review --> verify
-  verify --> release
+  verify --> security-review
+  security-review --> final-validation
+  docs --> final-validation
+  final-validation --> release
 ```
 
 | Task (from the plan) | Requirements | Files |
@@ -69,16 +70,15 @@ flowchart LR
 
 | Metric | Value |
 |---|---|
-| Status | SUCCEEDED, 14 nodes, 0 failed |
-| Attempts / retries | 21 / 5 (retry rate 0.24) |
-| First-pass yield | 86% of nodes |
+| Status | SUCCEEDED, 15 nodes, 0 failed |
+| Attempts / retries | 22 / 5 |
 | Rollbacks / fallbacks | 1 / 1 |
 | Gate failures / policy blocks | 2 / 1, all recovered |
-| Human checkpoints | 4 (design twice, schema change, release) |
+| Human checkpoints | 4 (design twice, schema change, release), scripted demonstration decisions |
 | Re-plan invalidations | 2 |
-| MTTR | 3.1 s |
-| End-to-end | 21.4 s (of which ~10 s is the full `mvn verify`) |
-| Audit log | 129 events, hash chain verified |
+| MTTR | 3.4 s |
+| End-to-end | 34.3 s (two full `mvn verify` runs: verify and final validation) |
+| Audit log | 138 events, hash chain verified; 14 fixture model calls |
 
 Evidence (committed): [run report](../evidence/drill/report.html) (open locally) ·
 [audit log](../evidence/drill/events.jsonl) · [metrics](../evidence/drill/metrics.json) ·

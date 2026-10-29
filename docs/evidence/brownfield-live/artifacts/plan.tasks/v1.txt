@@ -1,0 +1,68 @@
+{
+  "rationale" : "The decomposition prioritizes foundational changes like database schema and core domain objects, followed by infrastructure setup (async, user-agent parsing). Click recording in the redirect path and the expired link fix are implemented in parallel where possible, as they are largely independent. Finally, the analytics API is built on top of the completed click service. This approach ensures a logical flow, minimizes blocking dependencies, and addresses critical bug fixes early.",
+  "tasks" : [ {
+    "id" : "db-migration-clicks-table",
+    "title" : "Create 'clicks' database table",
+    "description" : "Implement the Flyway migration script to create the 'clicks' table with `id`, `link_id`, `clicked_at`, `referrer_host`, `user_agent_family` columns and necessary indices (`idx_clicks_link_id`, `idx_clicks_clicked_at`, `idx_clicks_link_id_clicked_at`).",
+    "requirementIds" : [ "FR-1" ],
+    "files" : [ "src/main/resources/db/migration/V2__create_clicks_table.sql" ],
+    "dependsOn" : [ ],
+    "acceptanceCriteria" : [ "The 'clicks' table is successfully created in the database upon application startup.", "The 'clicks' table includes 'id', 'link_id', 'clicked_at', 'referrer_host', 'user_agent_family' columns.", "Indexes 'idx_clicks_link_id', 'idx_clicks_clicked_at', and 'idx_clicks_link_id_clicked_at' are created." ]
+  }, {
+    "id" : "click-domain-repository",
+    "title" : "Implement Click domain and repository",
+    "description" : "Create the `Click` record (or class) to represent a click event, including fields for `id`, `linkId`, `clickedAt`, `referrerHost`, and `userAgentFamily`. Implement `ClickRepository` using `JdbcClient` to persist `Click` objects and retrieve them by `linkId`.",
+    "requirementIds" : [ "FR-1" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/click/Click.java", "src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java" ],
+    "dependsOn" : [ "db-migration-clicks-table" ],
+    "acceptanceCriteria" : [ "The 'Click' domain object is correctly defined.", "ClickRepository can successfully insert a new click record into the 'clicks' table.", "ClickRepository can retrieve click records by link ID." ]
+  }, {
+    "id" : "async-ua-parser-config",
+    "title" : "Configure asynchronous processing and User-Agent parsing",
+    "description" : "Add the `ua-parser-java` dependency to `pom.xml`. Create `UserAgentParser` utility class to classify user-agent strings into 'browser', 'bot', or 'other'. Enable Spring's asynchronous processing by adding `@EnableAsync` to `UrlShortenerApplication`. Configure a `ThreadPoolTaskExecutor` in `AsyncConfiguration` for asynchronous tasks. Wire `UserAgentParser` and the async executor in `ClickConfiguration`.",
+    "requirementIds" : [ "FR-1", "NFR-1", "Q-2" ],
+    "files" : [ "pom.xml", "src/main/java/io/github/marishasahay/shortener/click/UserAgentParser.java", "src/main/java/io/github/marishasahay/shortener/config/AsyncConfiguration.java", "src/main/java/io/github/marishasahay/shortener/UrlShortenerApplication.java", "src/main/java/io/github/marishasahay/shortener/click/ClickConfiguration.java" ],
+    "dependsOn" : [ ],
+    "acceptanceCriteria" : [ "The 'ua-parser-java' library is successfully added as a project dependency.", "UserAgentParser correctly classifies various user-agent strings into 'browser', 'bot', or 'other'.", "Spring's @Async annotation is enabled and configured with a dedicated TaskExecutor.", "UserAgentParser is available as a Spring bean." ]
+  }, {
+    "id" : "click-service-recording",
+    "title" : "Implement ClickService for recording clicks",
+    "description" : "Implement the `recordClick` method in `ClickService`. This method should take necessary request details (e.g., `HttpServletRequest` or extracted headers) to extract referrer host and user-agent string. It will use `UserAgentParser` to classify the user-agent and `ClickRepository` to persist the `Click` event. The method must be annotated with `@Async` to ensure non-blocking execution. Handle `Referer` header parsing as per Q-5.",
+    "requirementIds" : [ "FR-1", "NFR-1", "NFR-2", "Q-5" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/click/ClickService.java" ],
+    "dependsOn" : [ "click-domain-repository", "async-ua-parser-config" ],
+    "acceptanceCriteria" : [ "ClickService.recordClick method is implemented and marked as @Async.", "The method correctly extracts referrer host (or null) and user-agent family from request details.", "A Click record is successfully persisted via ClickRepository when recordClick is called.", "No raw IP addresses are stored." ]
+  }, {
+    "id" : "redirect-controller-analytics",
+    "title" : "Integrate click recording into RedirectController",
+    "description" : "Inject `ClickService` into `RedirectController`. After a successful redirect (HTTP 302), call `clickService.recordClick` with the short code and relevant request details (e.g., `HttpServletRequest`) to trigger asynchronous click recording.",
+    "requirementIds" : [ "FR-1", "NFR-1" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/link/RedirectController.java" ],
+    "dependsOn" : [ "click-service-recording" ],
+    "acceptanceCriteria" : [ "RedirectController successfully injects ClickService.", "A call to clickService.recordClick is made for every successful HTTP 302 redirect.", "The redirect endpoint's P99 latency is not significantly impacted (within NFR-1)." ]
+  }, {
+    "id" : "link-resolver-expiry-fix",
+    "title" : "Fix expired link handling in LinkResolver and cache",
+    "description" : "Modify `CacheConfiguration` to configure the redirect cache to store full `Link` objects (instead of just target URLs). Update `LinkResolver` to retrieve `Link` objects from this cache. In the `resolve` method, explicitly check the `expiresAt` field of the retrieved `Link` object against the current time. If the link is expired, throw a `LinkExpiredException`.",
+    "requirementIds" : [ "FR-3", "NFR-4" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java", "src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java" ],
+    "dependsOn" : [ ],
+    "acceptanceCriteria" : [ "The redirect cache now stores full 'Link' objects.", "LinkResolver correctly retrieves 'Link' objects from the cache.", "If a cached link's 'expiresAt' is in the past, LinkResolver throws LinkExpiredException.", "If a non-cached link's 'expiresAt' is in the past, LinkResolver throws LinkExpiredException.", "Links with 'expiresAt' in the future or null still redirect correctly." ]
+  }, {
+    "id" : "click-stats-models-service",
+    "title" : "Implement click statistics models and service methods",
+    "description" : "Create `LinkStatsResponse` record (or class) to hold total clicks, last click timestamp, and a list of `DailyClickCount` objects. Create `DailyClickCount` record for date and count. Add methods to `ClickService` (e.g., `getLinkStats`) to query `ClickRepository` and aggregate this data, calculating daily counts for the last 7 days using UTC for daily boundaries (Q-4).",
+    "requirementIds" : [ "FR-2", "NFR-3", "Q-4" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/click/LinkStatsResponse.java", "src/main/java/io/github/marishasahay/shortener/click/DailyClickCount.java", "src/main/java/io/github/marishasahay/shortener/click/ClickService.java" ],
+    "dependsOn" : [ "click-domain-repository" ],
+    "acceptanceCriteria" : [ "LinkStatsResponse and DailyClickCount models are correctly defined.", "ClickService.getLinkStats method aggregates total clicks and last click timestamp correctly.", "ClickService.getLinkStats method calculates daily click counts for the last 7 days using UTC.", "ClickService.getLinkStats returns correct data for links with and without clicks." ]
+  }, {
+    "id" : "link-stats-api-controller",
+    "title" : "Expose Link Statistics API endpoint",
+    "description" : "Create `LinkStatsApiController` to handle `GET /api/v1/links/{code}/stats` requests. Inject `ClickService` and call `getLinkStats`. Map `LinkNotFoundException` to an HTTP 404 Not Found response (Q-3). Update `api/openapi.yaml` to document the new endpoint and its response schema.",
+    "requirementIds" : [ "FR-2", "Q-3" ],
+    "files" : [ "src/main/java/io/github/marishasahay/shortener/click/LinkStatsApiController.java", "api/openapi.yaml" ],
+    "dependsOn" : [ "click-stats-models-service" ],
+    "acceptanceCriteria" : [ "The GET /api/v1/links/{code}/stats endpoint is accessible.", "Requests for existing links return HTTP 200 OK with a LinkStatsResponse JSON body.", "Requests for non-existent links return HTTP 404 Not Found.", "The OpenAPI contract is updated to reflect the new endpoint." ]
+  } ]
+}

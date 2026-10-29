@@ -1,82 +1,57 @@
-# Demo script (10–15 minutes)
+# Demo script (10-15 minutes)
 
-A walkthrough for presenting the system live. Every step works offline except the optional live
-run in step 6.
+Offline except the optional live step. Before: `mvn -q verify` once, Docker running.
 
-**Before:** `mvn -q verify` once (warms the Maven cache; ~20 s), Docker running, two terminals.
-
-## 1. The idea (1 min)
-"A requirement goes in; a reviewable patch comes out, with tests, docs, traceability and an audit
-trail. Agents do the work, a governed workflow engine decides what's accepted, and humans approve
-what matters." Show the diagram in the [README](../README.md).
-
-## 2. The engine in one picture (2 min)
-[architecture §3.3](architecture.md#33-one-attempt): one attempt = agent proposes → policy →
-apply under lock → deterministic gates → (human) → checkpoint, or rollback with the evidence fed
-to the next attempt. Then [§3.5](architecture.md#35-dynamic-planning-and-re-planning): expansion
-and content-hash re-planning.
-
-## 3. Break things on purpose: the drill (4 min)
+## 1. Requirement → plan (3 min)
 ```bash
-./agentic run drill
+./agentic run brownfield --approvals scripted --run-id demo
 ```
-Narrate as the log scrolls:
-- `codebase-scan` and `requirements` start together (parallel), `impact-analysis` waits for both
-  (join).
-- **FAIL impact-grounding: LinkCache.java: no such file**: the model invented a file; the
-  JavaParser index caught it; retry with the evidence.
-- **design: approved, amended [requirements.spec]** → **invalidated** `impact-analysis` and
-  `design`: the reviewer changed the requirement; only the affected nodes re-run.
-- **plan expanded into [impl-resolver-expiry-check, impl-expiry-index]**: both run in parallel.
-- **policy: BLOCK schema-migration**: the agent edited an applied migration; rejected before a
-  byte was written. Attempt 2 adds V2 → **waiting for human approval** (schema change).
-- **FAIL maven-compile → rollback**: a real compiler error, rolled back to the last checkpoint.
-- **docs: 503 … fallback strategy activated**: model outage, deterministic fallback.
-- `tests`, `docs`, `security-review` in parallel → `verify` runs the full `mvn verify` with
-  Testcontainers → `release` waits for sign-off.
+- Show the requirement ([scenarios/brownfield.yaml](../scenarios/brownfield.yaml)) and the
+  normalized spec: `.runs/demo/artifacts/requirements.spec/v1.txt`. Point at **Q-1**: "every
+  redirect" vs "no noticeable latency" is raised, not guessed.
+- `codebase-scan` and `requirements` start together; `impact-analysis` joins both and is checked
+  against the JavaParser index.
+- `plan expanded into [impl-expiry-fix, impl-click-storage, impl-click-recording,
+  impl-click-statistics]`: two waves of parallel tasks.
 
-## 4. The evidence (3 min)
+## 2. Execution with rejection and recovery (3 min)
+- **design rejected** by the (demonstration) reviewer: "make recording bounded, say it is best
+  effort, add retention". The contract change is rolled back; attempt 2 addresses it and is
+  approved. Both decisions are bound to the proposal hash.
+- `impl-click-storage` stops for **acceptance** of the V2 migration; the validated tree hash is in
+  the request.
+- For failures under fire, run `./agentic run drill`: hallucinated file rejected by grounding, an
+  edit to the applied V1 migration blocked by policy, a compile failure rolled back, a model outage
+  handled by fallback, a reviewer amendment that re-plans exactly two nodes.
+- For authorization **before** execution: `./agentic run greenfield --approvals scripted` and watch
+  `impl-web-api waiting for authorization: [dependency-change]` before its `pom.xml` is written.
+
+## 3. Validated patch → human approval (3 min)
+- `final-validation` re-runs `mvn verify` (unit + PostgreSQL ITs + Checkstyle + coverage), the
+  security scan, structural contract compatibility and docs coverage on one tree, and checks that
+  the security review still describes it.
+- `release` (entry gate `validated-tree`) asks for sign-off on that tree. Open
+  `.runs/demo/release.patch` and the release notes' "Validation evidence" section.
+- Be the human: `./agentic run brownfield --approvals interactive --run-id demo-human`; at
+  `design` press `d` (diff), `r` and type feedback, or `e` to amend `requirements.spec` (a broken
+  amendment is refused and you are asked again).
+
+## 4. Evidence and recovery (2 min)
 ```bash
-open .runs/drill/report.html
+open .runs/demo/report.html
+./agentic verify-log demo
+./agentic check-evidence drill greenfield brownfield ambiguous
 ```
-- KPIs: success rate, first-pass yield, retry/rollback rates, MTTR, human vs machine time.
-- Graph: amber borders = nodes that recovered.
-- Human checkpoints: the amendment and its comment.
-- Decisions and lineage: the same decision based on `requirements.spec@v1` and then `@v2`.
-- Gates, policy and recovery: compiler output, policy finding, rollback, fallback.
+Tamper with an artifact (`echo x >> .runs/demo/artifacts/plan.tasks/v1.txt`) and run
+`./agentic resume demo`: refused, the artifact no longer matches its recorded hash.
 
-Then the audit trail is tamper-evident:
+## 5. The output (1 min)
 ```bash
-./agentic verify-log drill                         # verified
-cp -R .runs/drill .runs/tampered
-python3 -c "p='.runs/tampered/events.jsonl';s=open(p).read();open(p,'w').write(s.replace('\"reviewer\":\"scripted-reviewer\"','\"reviewer\":\"someone-else\"',1))"
-./agentic verify-log tampered                      # BROKEN at event 31
+tools/final-service.sh && cd target/final-service && docker compose up -d && mvn spring-boot:run
 ```
-And the outcome itself: `cat .runs/drill/release.patch`, and the
-[traceability matrix](evidence/drill/artifacts/release.traceability/v1.txt).
+Follow a link a few times, then `GET /api/v1/links/{code}/stats`. Explain the best-effort trade-off
+([ADR-0017](adr/0017-best-effort-click-analytics.md)) and the scale boundaries in its README.
 
-## 5. Safe stop and resume (1 min)
-```bash
-./agentic run drill --run-id stop-demo &           # terminal 1
-./agentic stop stop-demo                           # terminal 2, a few seconds later
-./agentic resume stop-demo                         # accepted nodes are not redone
-```
-
-## 6. Human in the loop, for real (optional, 3 min)
-```bash
-./agentic run brownfield --approvals interactive   # replays the recording if present
-```
-At the design checkpoint: `v` to view the design, `d` for the diff, then `r` and type "make
-click recording bounded and asynchronous". The design rolls back and the architect retries with
-that comment. Or `e` to edit `requirements.spec` and watch downstream nodes re-plan.
-
-## 7. Code tour (2 min)
-- `WorkflowEngine.schedule` (scheduler loop), `replanStaleNodes` (re-planning).
-- `NodeRunner.attempt` / `gateApproveAndAccept` (the governed lifecycle).
-- `GovernancePolicy` (change control as code) and `WorkspaceScopeRule` (protecting the
-  guardrails).
-- `WorkflowEngineTest`: the test names read as the specification of the controls.
-
-## 8. Close (1 min)
-Trade-offs and the production path: [architecture §10](architecture.md#10-production-path) and
-[risks-and-limitations.md](risks-and-limitations.md).
+## 6. Close (1 min)
+What is proven (orchestration, governance, the code) and what is not (model quality in the
+committed evidence, production load): [FINAL_SUMMARY.md](../FINAL_SUMMARY.md).

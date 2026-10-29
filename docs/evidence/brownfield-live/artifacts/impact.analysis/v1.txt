@@ -1,0 +1,144 @@
+{
+  "summary" : "This project introduces basic click analytics for shortened URLs and fixes an issue where expired links were incorrectly redirecting due to caching. Click tracking is implemented for successful redirects, recording timestamp, referrer host, and coarse user-agent family. A new API endpoint provides total, last, and daily click statistics. The redirect cache is updated to store full link metadata, ensuring that expired links consistently return an HTTP 410 Gone status.",
+  "components" : [ {
+    "path" : "src/main/resources/db/migration/V2__create_clicks_table.sql",
+    "kind" : "ADD",
+    "change" : "New table for click analytics",
+    "reason" : "To store click events as per FR-1."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/Click.java",
+    "kind" : "ADD",
+    "change" : "New domain record",
+    "reason" : "Represents a single click event for persistence and processing."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java",
+    "kind" : "ADD",
+    "change" : "New repository class",
+    "reason" : "Handles persistence and retrieval of click data from the database."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/ClickService.java",
+    "kind" : "ADD",
+    "change" : "New service class",
+    "reason" : "Orchestrates click recording (asynchronously) and retrieval of click statistics."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/UserAgentParser.java",
+    "kind" : "ADD",
+    "change" : "New utility class",
+    "reason" : "Parses user-agent strings to determine coarse user-agent family (browser, bot, other) as per FR-1 and Q-2."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/ClickConfiguration.java",
+    "kind" : "ADD",
+    "change" : "New configuration class",
+    "reason" : "Wires up beans related to click analytics, including the UserAgentParser."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/LinkStatsResponse.java",
+    "kind" : "ADD",
+    "change" : "New domain record",
+    "reason" : "Defines the structure of the response for the link statistics API (FR-2)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/DailyClickCount.java",
+    "kind" : "ADD",
+    "change" : "New domain record",
+    "reason" : "Represents a daily click count within the LinkStatsResponse (FR-2)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/click/LinkStatsApiController.java",
+    "kind" : "ADD",
+    "change" : "New controller class",
+    "reason" : "Exposes the GET /api/v1/links/{code}/stats endpoint (FR-2)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/AsyncConfiguration.java",
+    "kind" : "ADD",
+    "change" : "New configuration class",
+    "reason" : "Enables Spring's asynchronous method execution for click recording to meet NFR-1."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/UrlShortenerApplication.java",
+    "kind" : "MODIFY",
+    "change" : "Enable asynchronous processing",
+    "reason" : "Add @EnableAsync annotation to allow asynchronous click recording (NFR-1)."
+  }, {
+    "path" : "pom.xml",
+    "kind" : "MODIFY",
+    "change" : "Add new dependency and enable async",
+    "reason" : "Include 'ua-parser-java' for user-agent parsing (Q-2) and configure Spring Boot for async execution."
+  }, {
+    "path" : "api/openapi.yaml",
+    "kind" : "MODIFY",
+    "change" : "Add new API endpoint definition",
+    "reason" : "Document the new GET /api/v1/links/{code}/stats endpoint (FR-2)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java",
+    "kind" : "MODIFY",
+    "change" : "Change cache value type",
+    "reason" : "Update redirect cache to store 'Link' objects instead of just 'String' target URLs, enabling expiry checks on cached entries (FR-3)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java",
+    "kind" : "MODIFY",
+    "change" : "Update cache usage and expiry logic",
+    "reason" : "Modify to store and retrieve 'Link' objects from the cache and explicitly check 'expiresAt' on every resolution, even on cache hits, to ensure expired links return 410 Gone (FR-3, NFR-4)."
+  }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/link/RedirectController.java",
+    "kind" : "MODIFY",
+    "change" : "Inject ClickService and record clicks",
+    "reason" : "Inject the new ClickService and call its asynchronous recordClick method for every successful redirect (FR-1, NFR-1)."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java",
+    "kind" : "ADD",
+    "change" : "New test cases",
+    "reason" : "Add tests for the updated LinkResolver logic, specifically for expired links and cache interactions."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/link/LinkLifecycleIT.java",
+    "kind" : "MODIFY",
+    "change" : "Add integration test cases",
+    "reason" : "Verify end-to-end behavior of expired links returning 410 Gone, including scenarios with cached links (FR-3, NFR-4)."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/click/ClickServiceTest.java",
+    "kind" : "ADD",
+    "change" : "New unit test class",
+    "reason" : "Test the business logic of ClickService, including click recording and stats aggregation."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/click/ClickRepositoryIT.java",
+    "kind" : "ADD",
+    "change" : "New integration test class",
+    "reason" : "Test the persistence layer for click data, ensuring correct storage and retrieval."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/click/LinkStatsApiIT.java",
+    "kind" : "ADD",
+    "change" : "New integration test class",
+    "reason" : "Test the new /api/v1/links/{code}/stats endpoint end-to-end, covering various click scenarios (FR-2)."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/click/UserAgentParserTest.java",
+    "kind" : "ADD",
+    "change" : "New unit test class",
+    "reason" : "Test the UserAgentParser's ability to correctly classify user-agent strings."
+  }, {
+    "path" : "src/test/java/io/github/marishasahay/shortener/link/RedirectControllerTest.java",
+    "kind" : "MODIFY",
+    "change" : "Add test cases for click recording",
+    "reason" : "Verify that the RedirectController correctly invokes the ClickService for recording clicks."
+  } ],
+  "apiChanges" : [ "ADD GET /api/v1/links/{code}/stats: This new endpoint provides click analytics for a given short code. It is backward compatible as it's an additive change.", "MODIFY GET /{code}: The behavior for expired links changes from an incorrect 302 redirect to a correct 410 Gone status. This is a fix for a bug and is considered a backward-compatible correction, aligning with the HTTP specification for expired resources. Click recording is an internal side effect and does not alter the API contract for this endpoint." ],
+  "dataChanges" : [ "A new 'clicks' table will be added to the PostgreSQL database to store click event data (timestamp, referrer host, user-agent family, link ID). This is an additive schema change and is backward compatible.", "A new Flyway migration script, V2__create_clicks_table.sql, will be introduced to manage the creation of the 'clicks' table." ],
+  "dataFlows" : [ "Redirect Flow (GET /{code}):\n1. Client requests a short URL (e.g., /abc).\n2. Request hits RedirectController.\n3. RedirectController calls LinkResolver.resolve(code).\n4. LinkResolver retrieves the full Link object from a Caffeine cache (Cache<String, Link>) or loads it from LinkRepository on a cache miss.\n5. LinkResolver checks if Link.isExpiredAt(clock.instant()). If true, LinkExpiredException is thrown, leading to a 410 Gone response via ProblemDetailsAdvice.\n6. If not expired, LinkResolver returns the target URL.\n7. RedirectController issues an HTTP 302 Found redirect to the target URL.\n8. Asynchronously, RedirectController calls ClickService.recordClick(code, requestDetails) to store click analytics (FR-1, NFR-1).", "Link Statistics Flow (GET /api/v1/links/{code}/stats):\n1. Client requests /api/v1/links/{code}/stats.\n2. Request hits LinkStatsApiController.\n3. LinkStatsApiController calls ClickService.getLinkStats(code).\n4. ClickService queries ClickRepository to aggregate total clicks, last click timestamp, and daily click counts for the last 7 days (FR-2, NFR-3).\n5. ClickService returns a LinkStatsResponse object.\n6. LinkStatsApiController returns the LinkStatsResponse as a JSON body with HTTP 200 OK or 404 Not Found if the link code does not exist (Q-3)." ],
+  "risks" : [ {
+    "description" : "Performance degradation of the redirect service due to synchronous analytics recording.",
+    "impact" : "Increased P99 latency for all redirects, potentially leading to poor user experience and increased infrastructure costs (NFR-1).",
+    "mitigation" : "Click recording will be implemented as an asynchronous operation using Spring's @Async with a dedicated TaskExecutor. This decouples the analytics write path from the critical redirect path. P99 latency of GET /{code} will be closely monitored before and after deployment."
+  }, {
+    "description" : "Data integrity issues with click counts or timestamps.",
+    "impact" : "Inaccurate analytics, leading to a loss of trust in the data.",
+    "mitigation" : "The ClickRepository will use robust JDBC operations, ensuring transactional writes for click recording. For asynchronous processing, Spring's default error handling for @Async methods will be relied upon, with monitoring for any failures. Data consistency will be regularly audited."
+  }, {
+    "description" : "Security vulnerability due to user-agent parsing library.",
+    "impact" : "Potential for injection attacks, denial of service, or unexpected behavior if a malicious user-agent string is processed.",
+    "mitigation" : "A well-vetted and actively maintained third-party library ('ua-parser-java') will be used for user-agent parsing. Code reviews will focus on input sanitization and error handling around user-agent processing. The library will be kept updated."
+  }, {
+    "description" : "Cache invalidation logic for expired links is complex and introduces new bugs.",
+    "impact" : "Expired links continue to redirect, or valid links incorrectly return 410 Gone (NFR-4).",
+    "mitigation" : "The LinkResolver will be modified to store full 'Link' objects in the Caffeine cache. The 'resolve' method will explicitly check the 'expiresAt' field of the cached 'Link' object on every request, even on a cache hit. This simplifies the cache logic by centralizing the expiry check. Thorough unit and integration tests will cover edge cases around 'expiresAt' and cache interactions."
+  }, {
+    "description" : "Storage cost increase due to click data.",
+    "impact" : "Higher database costs and potential performance degradation for database queries if data growth is unmanaged.",
+    "mitigation" : "Storage growth for the 'clicks' table will be monitored. If necessary, future iterations may implement data archiving or purging policies for older, raw click records, retaining only aggregated daily counts for long-term trends."
+  } ],
+  "testStrategy" : "The test strategy will include comprehensive unit, integration, and regression tests.\n\n**Unit Tests:**\n- New unit tests for `Click.java`, `ClickRepository.java`, `ClickService.java`, `UserAgentParser.java`, `LinkStatsResponse.java`, and `DailyClickCount.java` to verify their individual functionalities.\n- Updated `LinkResolverTest` to cover the new behavior of caching `Link` objects and consistently checking expiry, even on cache hits.\n- Updated `RedirectControllerTest` to verify that `ClickService.recordClick` is called asynchronously upon a successful redirect.\n\n**Integration Tests:**\n- New `ClickAnalyticsIT` to perform end-to-end testing of click recording on redirects, ensuring data is correctly stored and associated with links.\n- New `LinkStatsApiIT` to test the `GET /api/v1/links/{code}/stats` endpoint, covering scenarios such as links with no clicks, multiple clicks, and accurate daily counts for the last 7 days (FR-2, NFR-3).\n- Updated `LinkLifecycleIT` to include scenarios for expired links, verifying that they consistently return HTTP 410 Gone, even when previously cached (FR-3, NFR-4).\n- Performance tests will be conducted on the `GET /{code}` endpoint to measure P99 latency before and after the change, ensuring NFR-1 (no more than 5ms increase) is met.\n\n**Regression Tests:**\n- Existing integration tests (e.g., `LinkLifecycleIT`, `LinkWebLayerTest`, `RateLimitIT`) will be re-run to ensure that existing functionality, such as link creation, retrieval, deletion, and rate limiting, remains unaffected for non-expired links and that no regressions are introduced."
+}

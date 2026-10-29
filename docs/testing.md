@@ -1,61 +1,76 @@
 # Testing approach
 
-Two systems are under test: the orchestrator (does governance work?) and the service it produces
-(is the output production quality?). Both are tested at several levels, and the orchestrator's
-own outputs are tested by real builds during every run.
+Two systems are under test: the orchestrator (does governance hold, including under failure?)
+and the service it produces (is the output production quality?). The orchestrator's outputs are
+also tested by real builds inside every run.
 
 ```bash
-mvn verify                 # everything below except scenario replays (~20 s; needs Docker)
-./agentic run drill        # end-to-end governance drill (~25 s)
+mvn verify                                   # 290 tests, Checkstyle, coverage gates (Docker)
+./agentic run drill                          # governance drill (~35 s)
+./agentic run brownfield --approvals scripted
+tools/final-service.sh && mvn -f target/final-service/pom.xml verify   # final service
 ```
 
 ## Levels
 
 | Level | What | Where | Count |
 |---|---|---|---|
-| Engine behaviour | One test per governance mechanism, with plain-lambda tasks: parallel joins, retries with feedback, fallback, rollback on gate failure, policy block before write, approval rejection loop, amendment-driven re-planning (incl. execution numbering), plan expansion and joins, failure skip + safe stop, kill switch + resume (incl. an execution interrupted mid-retry), attempt budget, timeouts, entry gates | `orchestrator-core` `WorkflowEngineTest` | 14 |
-| Core components | Graph validation and rewiring, policy rules (table-driven), git workspace (rollback, untracked files, path traversal), hash-chained log (tamper detection), metrics (exact durations with a manual clock), command gates (timeouts, fail-closed) | `orchestrator-core` | 33 |
-| Agent contracts | Each agent runs inside a real engine with a **scripted model** and a real git workspace (`AgentHarness`): prompts carry the right context, replies map to artifacts/changes/decisions, malformed replies are retried with the parse error, scanners and gates behave as specified | `orchestrator-agents` `AgentsTest` | 10 |
-| Agent infrastructure | Contract parsing, record/replay (drift, fixtures, simulated outages, no key leakage), model settings, LangChain4j integration offline (every contract yields a JSON schema; request shape; token mapping; Gemini client construction), JavaParser index **against the real baseline service**, gates and validators | `orchestrator-agents` | 28 |
-| Workflow shape and reporting | The three templates (parallel branches, joins, mandatory checkpoints, bounded retries, fallbacks), scenario files, HTML report, progress output, console approvals including the edit-and-amend flow | `orchestrator-app` | 9 |
-| Service unit | Code generator, URL and alias policies (table-driven), service collision retry, resolver/cache, rate limiter with a mutable clock, web layer (every status code and ProblemDetail shape), wiring | `url-shortener` (surefire) | 124 |
-| Service integration | Full application against **real PostgreSQL 17** (Testcontainers, one shared container): lifecycle, repository, rate limiting, actuator | `url-shortener` (failsafe, `*IT`) | 16 |
-| End to end | Scenario runs through the CLI: real agents, policy, gates and Maven builds; model replies replayed (recorded or hand-authored). The drill plants one fault per control | `./agentic run <scenario>`; CI step | 1 drill + recorded scenarios |
+| Engine mechanisms | Parallel joins, retries with feedback, fallback, rollback on gate failure, policy block, approval loop, re-planning, expansion, safe stop, kill switch + resume, budgets, timeouts | `orchestrator-core` `WorkflowEngineTest` | 14 |
+| Governance invariants | Authorization before execution; fail-closed reviewers; rollback on partial apply, checkpoint, gateway failure; quarantine when rollback fails; stale parallel proposals rejected; invalidated in-flight work discarded (input and generation paths); evidence and acceptance bound to the validated tree; a gate that rewrites the tree; amendment validation; audit-log fail-stop | `GovernanceTest` | 13 |
+| Recovery | Resume refuses a tampered log, a modified artifact, a different workflow; recovers only accepted work when cut after a checkpoint, after artifact publication, and after the success event (4 crash points, from a real run's truncated log); budgets carried over or reset with a record | `ResumeTest` | 8 |
+| Core components | Graph validation, policy rules incl. build integrity (7 ways to weaken a gate) and stage scopes, git workspace incl. snapshots, hash-chained log, metrics, command gates and sandboxes, scripted gateway | `orchestrator-core` | 46 |
+| Agent contracts | Each agent in a real engine with a scripted model and git workspace; degraded verification needs a waiver; final validation marks evidence stale after a code repair | `orchestrator-agents` | 52 |
+| CLI and reporting | Templates (evidence order, overlap serialisation), approval-mode resolution (no auto-approve, unknown modes rejected), evidence checker (missing or tampered evidence fails), report and console | `orchestrator-app` | 15 |
+| v1 service | Unit 126, Testcontainers ITs 16 | `url-shortener` | 142 |
+| Final service | Unit 153, ITs 24 incl. `ClickAnalyticsIT`, `CachedLinkExpiryIT`, `ContractConformanceIT` | `target/final-service` (CI) | 177 |
+| End to end | Four scenarios through the CLI with real agents, policy, gates, Maven builds; replies are hand-authored fixtures | CI step; `docs/evidence` | 4 runs |
+
+Concurrency tests force ordering with latches released by audit events (for example "release
+the consumer when the amender's success is logged"), never with sleeps; the governance and
+resume tests were run six times in a row without a failure while developing. Failure injection
+uses a delegating `FaultyWorkspace` (fail mid-apply, fail the commit, fail the rollback) and an
+audit file that becomes a directory mid-run.
 
 ## Gates on the test code itself
-Every module runs Checkstyle (Google style, warnings fail the build) and a JaCoCo **80% line
-coverage gate**. Current line / branch coverage:
+Every module runs Checkstyle (warnings fail the build) and an 80% line coverage gate. Line
+coverage: orchestrator-core 89.8%, v1 service 99.6%, final service 99.3% (unit + integration,
+merged). `AgenticCli` (composition root) and the service `main` class are excluded.
 
-| Module | Line | Branch |
-|---|---|---|
-| orchestrator-core | 90.3% | 80.7% |
-| orchestrator-agents | 91.1% | 76.0% |
-| orchestrator-app (excluding the `AgenticCli` composition root) | 90.1% | 76.2% |
-| url-shortener (unit + integration, merged) | 99.6% | 94.9% |
+## Execution sandbox
+Gate commands always run with an allow-listed environment (unit-tested). The opt-in Docker
+sandbox (`--sandbox docker`) was checked by hand on this machine (Docker Desktop 29.9, Apple M4):
+after `warmup-sandbox` filled the dependency cache, the v1 service's full `mvn verify` (unit +
+integration tests against the private PostgreSQL sidecar, Checkstyle, coverage) passed offline in
+13 s; a probe script inside the sandbox saw no `GEMINI_API_KEY` (set in the caller's
+environment), no `/Users`, no Docker socket and no route to the internet, and containers and
+networks were removed afterwards. The whole drill then ran with every gate in the sandbox
+(`./agentic run drill --sandbox docker`): SUCCEEDED on the same path (15 nodes, 5 retries, 1
+rollback, 1 fallback) in 44 s, evidence check OK, nothing left behind. The committed scenario
+evidence used the host sandbox, which is recorded in each run's settings and gate evidence.
 
-`AgenticCli` (argument parsing, wiring, `System.exit`) is excluded from the unit-coverage gate and
-covered by the end-to-end runs instead; the shortener similarly excludes its `main` class.
+## Load test
+`tools/loadtest/redirect-load.sh` (ApacheBench) measures the cached redirect path of a running
+final service. One run, 2026-10-29: Apple M4 (10 cores, 16 GB), macOS, OpenJDK 21.0.12, service
+jar with `-Xmx1g`, PostgreSQL 17 in Docker Desktop, client and server on the same laptop, 100,000
+requests at concurrency 50 with keep-alive on one cached link:
 
-## Testing the orchestrator's outputs during a run
-The code agents write is tested before it is accepted: each implementation task must compile; the
-test stage must pass `mvn test`; `verify` runs the full `mvn verify` (unit + Testcontainers ITs +
-Checkstyle + coverage) and only then is release readiness reached. Without Docker, `verify`
-degrades to unit tests and the run records `verifyProfile: DEGRADED` so the report cannot
-overstate what was verified.
+| Metric | Result |
+|---|---|
+| Throughput | 40,779 requests/s |
+| Latency p50 / p90 / p99 / max | 1 / 2 / 9 / 112 ms |
+| Failed requests | 0 (all 302; ApacheBench reports them as "non-2xx") |
+| Clicks | 102,000 redirects incl. warm-up: 92,146 recorded + 9,854 dropped and counted = 102,000 |
 
-## Design choices in the tests
-- **Deterministic time.** Engine metrics tests use a manual clock; service tests inject a mutable
-  `Clock`. No test sleeps to wait for time to pass, except the timeout tests which use 100–200 ms
-  limits.
-- **Real infrastructure where it matters.** Git (rollback), Maven (gates in the drill) and
-  PostgreSQL (ITs) are real; only the model is substituted.
-- **One assertion focus per test, named for behaviour** (`killSwitchPausesTheRunAndResumeFinishes
-  WithoutRepeatingWork`), so the test list reads as a specification of the controls.
+At about 20 times the 2,000 redirects/s target the 10,000-click queue saturated and dropped
+9.7% of clicks, counted exactly, without slowing redirects: the best-effort design doing what it
+says. This is one measurement on a developer laptop with the client competing for the same CPUs;
+it supports, but does not verify, the ambiguous scenario's 2,000 redirects/s, p99 < 50 ms target
+for a real deployment (network, cache misses and other links are not exercised). Not a CI gate.
 
 ## Not covered
-- **Live model quality.** Unit tests use scripted models; how well a given Gemini model performs
-  is observed in recorded runs, not asserted. Record/replay makes those runs reproducible after
-  the fact.
-- **Load and soak testing** of the service (the 2,000 redirects/s target in the ambiguous
-  scenario would need a Gatling/k6 run against a deployed instance).
-- **Concurrency stress** of the engine beyond the parallel-join, timeout and lock tests.
+- **Live model quality.** Unit tests use scripted models and the scenario evidence uses
+  hand-authored replies; see [scenarios/live.md](scenarios/live.md).
+- **Crash-safety beyond what is tested.** Recovery is tested at the persistence boundaries of an
+  acceptance by truncating the log; there is no fsync, so an OS crash can lose the last events
+  (the hash chain then ends early and resume continues from what is there).
+- **Concurrency stress** of the engine beyond the deterministic interleavings above.

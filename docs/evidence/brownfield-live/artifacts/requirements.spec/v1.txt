@@ -1,0 +1,96 @@
+{
+  "title" : "URL Shortener Analytics and Expired Link Fix",
+  "problemStatement" : "The existing URL shortener service lacks basic click analytics and incorrectly redirects expired links due to caching issues. This project aims to introduce click tracking for successful redirects and ensure expired links correctly return a 410 Gone status, even when cached.",
+  "goals" : [ "Provide basic click analytics for shortened URLs.", "Correctly handle expired links, preventing redirects after their 'expiresAt' timestamp.", "Maintain the performance of the core redirect functionality." ],
+  "functionalRequirements" : [ {
+    "id" : "FR-1",
+    "description" : "For every successful redirect (HTTP 302), record the timestamp, referrer host, and a coarse user-agent family (browser, bot, other).",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a shortened URL 'short.url/abc' exists and redirects to 'long.url/xyz'. When a client requests 'short.url/abc' with 'Referer: http://example.com/page' and 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'. Then a click record is stored including the current timestamp, 'example.com' as referrer host, and 'browser' as user-agent family.", "Given a shortened URL 'short.url/abc' exists and redirects to 'long.url/xyz'. When a client requests 'short.url/abc' with 'Referer: ' (empty) and 'User-Agent: curl/7.64.1'. Then a click record is stored including the current timestamp, 'null' as referrer host, and 'other' as user-agent family." ]
+  }, {
+    "id" : "FR-2",
+    "description" : "Expose GET /api/v1/links/{code}/stats returning total clicks, the time of the last click, and daily click counts for the last 7 days.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a short code 'abc' has 5 clicks, with the last click at '2023-10-27T10:30:00Z' and daily counts: '2023-10-21: 1', '2023-10-22: 2', '2023-10-23: 0', '2023-10-24: 0', '2023-10-25: 1', '2023-10-26: 0', '2023-10-27: 1'. When a GET request is made to '/api/v1/links/abc/stats'. Then the response is HTTP 200 OK with a JSON body containing 'totalClicks: 5', 'lastClickAt: \"2023-10-27T10:30:00Z\"', and 'dailyCounts' as an array of objects for the last 7 days (e.g., '[{\"date\": \"2023-10-21\", \"count\": 1}, ...]').", "Given a short code 'xyz' exists but has no clicks. When a GET request is made to '/api/v1/links/xyz/stats'. Then the response is HTTP 200 OK with a JSON body containing 'totalClicks: 0', 'lastClickAt: null', and 'dailyCounts' for the last 7 days, all with count 0.", "Given a short code 'nonexistent' does not exist. When a GET request is made to '/api/v1/links/nonexistent/stats'. Then the response is HTTP 404 Not Found." ]
+  }, {
+    "id" : "FR-3",
+    "description" : "When a link's 'expiresAt' timestamp has passed, any request to the short URL must return an HTTP 410 Gone status, even if the link is present in the redirect cache.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a short code 'exp' with 'expiresAt' set to 'T-1 hour' (one hour in the past). When a client requests 'short.url/exp'. Then the service returns HTTP 410 Gone.", "Given a short code 'exp' with 'expiresAt' set to 'T+1 hour' (one hour in the future). When a client requests 'short.url/exp'. Then the service returns HTTP 302 Found, redirecting to the target URL.", "Given a short code 'neverexp' with 'expiresAt' set to 'null'. When a client requests 'short.url/neverexp'. Then the service returns HTTP 302 Found, redirecting to the target URL." ]
+  } ],
+  "nonFunctionalRequirements" : [ {
+    "id" : "NFR-1",
+    "category" : "Performance",
+    "description" : "Recording click analytics must not add more than 5ms to the 99th percentile latency of the redirect endpoint (GET /{code}).",
+    "measure" : "Monitor P99 latency of GET /{code} before and after deployment using APM tools (e.g., Prometheus/Grafana, Datadog)."
+  }, {
+    "id" : "NFR-2",
+    "category" : "Security/Privacy",
+    "description" : "Raw IP addresses of clients making redirect requests must not be stored in any persistent storage for click analytics.",
+    "measure" : "Code review of data persistence layers, database schema inspection, and audit logs."
+  }, {
+    "id" : "NFR-3",
+    "category" : "Operability",
+    "description" : "Daily click counts for the /api/v1/links/{code}/stats endpoint must be available for at least the last 7 full days.",
+    "measure" : "Verify API response for 'dailyCounts' for links with historical data."
+  }, {
+    "id" : "NFR-4",
+    "category" : "Reliability",
+    "description" : "The service must ensure that expired links are correctly identified and return 410 Gone within 1 minute of their 'expiresAt' timestamp passing, regardless of caching.",
+    "measure" : "Automated tests simulating link expiration and cache hits, monitoring of redirect endpoint behavior for expired links."
+  } ],
+  "ambiguities" : [ {
+    "id" : "Q-1",
+    "question" : "What constitutes a 'successful redirect' for click tracking?",
+    "whyItMatters" : "Defines which events trigger analytics recording.",
+    "options" : [ "Any HTTP 3xx response", "Only HTTP 302 Found", "Any request that results in a redirect, even if the target is invalid" ],
+    "recommendedDefault" : "Only HTTP 302 Found, indicating a successful redirection to the target URL."
+  }, {
+    "id" : "Q-2",
+    "question" : "How should 'coarse user-agent family' be determined (browser, bot, other)?",
+    "whyItMatters" : "Impacts implementation complexity and accuracy of classification.",
+    "options" : [ "Use a third-party library (e.g., user-agent-string-parser)", "Implement custom regex-based logic", "Use a simpler heuristic (e.g., check for common bot strings)" ],
+    "recommendedDefault" : "Use a well-maintained, lightweight third-party library for user-agent parsing to ensure reasonable accuracy and maintainability."
+  }, {
+    "id" : "Q-3",
+    "question" : "What is the expected behavior for the /api/v1/links/{code}/stats endpoint if the 'code' does not exist?",
+    "whyItMatters" : "Defines API contract for invalid inputs.",
+    "options" : [ "Return HTTP 404 Not Found", "Return HTTP 200 OK with zero counts and null last click", "Return HTTP 400 Bad Request" ],
+    "recommendedDefault" : "Return HTTP 404 Not Found, as the resource (the link itself) does not exist."
+  }, {
+    "id" : "Q-4",
+    "question" : "What time zone should be used for 'daily click counts' in the /api/v1/links/{code}/stats API?",
+    "whyItMatters" : "Affects how daily boundaries are calculated and presented.",
+    "options" : [ "UTC", "Server's local time zone", "Client's requested time zone (via header)" ],
+    "recommendedDefault" : "UTC, as it provides a consistent, unambiguous global standard for time-series data."
+  }, {
+    "id" : "Q-5",
+    "question" : "How should the 'referrer host' be handled if the Referer header is missing or malformed?",
+    "whyItMatters" : "Impacts data quality and potential error handling.",
+    "options" : [ "Store as 'null' or empty string", "Attempt to parse and store 'null' on failure", "Log an error and discard the referrer data" ],
+    "recommendedDefault" : "Store as 'null' if the header is missing or cannot be parsed into a valid host, to avoid data loss and simplify analysis."
+  } ],
+  "assumptions" : [ "The existing service correctly handles the creation and initial redirection of short URLs.", "The 'expiresAt' field for links is already present in the PostgreSQL database and correctly managed by the existing service for non-cached scenarios.", "The service has a caching mechanism for redirects that can be inspected or modified to incorporate expiration checks.", "The existing service is built with Spring Boot and uses PostgreSQL, allowing for standard Java/Spring data access patterns.", "The mention of 'Spring Boot 4' is a typo and refers to a recent Spring Boot version (e.g., 3.x), as Spring Boot 4 does not exist yet. We will assume Spring Boot 3.x.", "'Noticeable latency' for redirects is quantifiable and can be measured as a P99 latency increase." ],
+  "outOfScope" : [ "Advanced analytics features (e.g., geographical data, device types beyond coarse family, clickstream analysis).", "User interface for viewing analytics.", "Authentication or authorization for the /api/v1/links/{code}/stats endpoint (it will be publicly accessible for now).", "Modifying the existing link creation or update processes.", "Implementing a new caching solution; the existing one will be adapted.", "Handling of 'expiresAt' for links that are already expired at the time of creation/update (assumed to be handled by existing logic or out of scope)." ],
+  "risks" : [ {
+    "description" : "Performance degradation of the redirect service due to synchronous analytics recording.",
+    "impact" : "Increased latency for all redirects, potentially leading to poor user experience and increased infrastructure costs.",
+    "mitigation" : "Implement asynchronous processing for click data recording (e.g., using a message queue or a separate thread pool) to decouple it from the critical redirect path. Monitor NFR-1 closely."
+  }, {
+    "description" : "Data integrity issues with click counts or timestamps.",
+    "impact" : "Inaccurate analytics, loss of trust in the data.",
+    "mitigation" : "Use robust database transactions for click recording. Implement idempotent processing if asynchronous queues are used. Regularly audit data for consistency."
+  }, {
+    "description" : "Security vulnerability due to user-agent parsing library.",
+    "impact" : "Potential for injection attacks, denial of service, or unexpected behavior if a malicious user-agent string is processed.",
+    "mitigation" : "Choose a well-vetted, actively maintained library for user-agent parsing. Ensure input sanitization and error handling. Keep the library updated."
+  }, {
+    "description" : "Cache invalidation logic for expired links is complex and introduces new bugs.",
+    "impact" : "Expired links continue to redirect, or valid links incorrectly return 410.",
+    "mitigation" : "Thorough unit and integration testing, especially for edge cases around 'expiresAt' and cache interactions. Implement clear cache expiration/revalidation policies."
+  }, {
+    "description" : "Storage cost increase due to click data.",
+    "impact" : "Higher database costs, potential performance degradation for database queries if not managed.",
+    "mitigation" : "Monitor storage growth. Implement data archiving or purging policies for older, less frequently accessed click data if necessary (e.g., aggregate daily counts and discard individual click records after a certain period)."
+  } ]
+}
