@@ -2,7 +2,8 @@
 
 A small URL shortener service (v1 baseline): create short links, redirect short codes, read link
 metadata, and delete links. Spring Boot 4.1, Java 21, PostgreSQL (Flyway, `JdbcClient`),
-Caffeine, Actuator. The API contract is in [`api/openapi.yaml`](api/openapi.yaml).
+Caffeine, Actuator. The API contract is in [`api/openapi.yaml`](api/openapi.yaml); a plain-English
+guide with sample requests and every possible response is in [`API.md`](API.md).
 
 ## Running locally
 

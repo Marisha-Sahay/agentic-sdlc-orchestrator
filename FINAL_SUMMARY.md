@@ -23,7 +23,7 @@ append-only event log records all of it.
 | Artifact | Location |
 |---|---|
 | Orchestrator (engine, agents, CLI) | `orchestrator-core`, `orchestrator-agents`, `orchestrator-app`, `./agentic` |
-| URL shortener v1 (API, schema, tests, docs) | `url-shortener/` (OpenAPI: `url-shortener/api/openapi.yaml`, browsable in Swagger UI at `/swagger-ui.html`) |
+| URL shortener v1 (API, schema, tests, docs) | `url-shortener/` (OpenAPI: `url-shortener/api/openapi.yaml`, browsable in Swagger UI at `/swagger-ui.html`; guide with samples: `url-shortener/API.md`) |
 | Scenarios | `scenarios/*.yaml`, greenfield scaffold, `cassettes/` |
 | Architecture and decisions | [docs/architecture.md](docs/architecture.md), [docs/adr](docs/adr) (15 ADRs) |
 | Requirements and traceability | [docs/requirements.md](docs/requirements.md), [docs/requirements-traceability.md](docs/requirements-traceability.md) |
