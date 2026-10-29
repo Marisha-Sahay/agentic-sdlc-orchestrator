@@ -55,6 +55,40 @@ class ThrottledLlmClientTest {
   }
 
   @Test
+  void failsFastWhenTheProviderQuotaCannotBeWaitedOut() {
+    LlmClient exhausted = call -> {
+      throw new RateLimitException("You exceeded your current quota.\n* Quota exceeded for metric: "
+          + "generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\n"
+          + "Please retry in 4h41m17.458s.");
+    };
+
+    assertThatThrownBy(() -> new ThrottledLlmClient(exhausted, new Semaphore(1), 5,
+        Duration.ofSeconds(5), waits::add).complete(CALL))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("quota exhausted").hasMessageContaining("281 min")
+        .hasMessageContaining("limit: 20");
+    assertThat(waits).isEmpty();
+  }
+
+  @Test
+  void honoursAShortProviderRetryHint() {
+    AtomicInteger calls = new AtomicInteger();
+    LlmClient briefly = call -> {
+      if (calls.incrementAndGet() == 1) {
+        throw new RateLimitException("Please retry in 12.5s.");
+      }
+      return OK;
+    };
+
+    new ThrottledLlmClient(briefly, new Semaphore(1), 5, Duration.ofSeconds(5), waits::add)
+        .complete(CALL);
+
+    assertThat(waits).containsExactly(Duration.ofMillis(12_500));
+    assertThat(ThrottledLlmClient.retryAfter("no hint here")).isEmpty();
+    assertThat(ThrottledLlmClient.retryAfter("retry in 2m")).contains(Duration.ofMinutes(2));
+  }
+
+  @Test
   void passesNonRetriableErrorsThroughImmediately() {
     LlmClient broken = call -> {
       throw new IllegalArgumentException("bad request");

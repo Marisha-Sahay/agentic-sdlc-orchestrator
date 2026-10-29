@@ -2,7 +2,10 @@ package io.github.marishasahay.agentic.agents.llm;
 
 import dev.langchain4j.exception.RetriableException;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.Semaphore;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Protects the provider quota. Caps concurrent model calls with a semaphore shared by every
@@ -28,6 +31,10 @@ public final class ThrottledLlmClient implements LlmClient {
   }
 
   private static final Duration MAX_BACKOFF = Duration.ofSeconds(60);
+  /** A provider asking us to wait longer than this has a quota we cannot wait out in a run. */
+  private static final Duration MAX_HONOURED_RETRY_AFTER = Duration.ofMinutes(2);
+  private static final Pattern RETRY_IN = Pattern.compile(
+      "retry in (?:(\\d+)h)?(?:(\\d+)m)?(?:([\\d.]+)s)?", Pattern.CASE_INSENSITIVE);
 
   private final LlmClient delegate;
   private final Semaphore permits;
@@ -77,10 +84,20 @@ public final class ThrottledLlmClient implements LlmClient {
         try {
           return delegate.complete(call);
         } catch (RetriableException e) {
+          Optional<Duration> retryAfter = retryAfter(e.getMessage());
+          if (retryAfter.isPresent() && retryAfter.get().compareTo(MAX_HONOURED_RETRY_AFTER) > 0) {
+            throw new IllegalStateException("Provider quota exhausted; it asks to retry in "
+                + retryAfter.get().toMinutes() + " min. Use a key with a higher quota, another "
+                + "model, or replay mode. Provider said: " + firstLine(e.getMessage()), e);
+          }
           if (retry >= maxRetries) {
             throw e;
           }
-          sleeper.sleep(backoff(retry));
+          Duration wait = backoff(retry);
+          if (retryAfter.isPresent() && retryAfter.get().compareTo(wait) > 0) {
+            wait = retryAfter.get();
+          }
+          sleeper.sleep(wait);
         }
       }
     } catch (InterruptedException e) {
@@ -89,6 +106,42 @@ public final class ThrottledLlmClient implements LlmClient {
     } finally {
       permits.release();
     }
+  }
+
+  /**
+   * Reads a provider retry hint such as "Please retry in 4h41m17.4s" or "retry in 12.5s".
+   *
+   * @param message provider error message
+   * @return the requested wait, if the message has one
+   */
+  static Optional<Duration> retryAfter(String message) {
+    if (message == null) {
+      return Optional.empty();
+    }
+    Matcher m = RETRY_IN.matcher(message);
+    if (!m.find() || (m.group(1) == null && m.group(2) == null && m.group(3) == null)) {
+      return Optional.empty();
+    }
+    long millis = 0;
+    if (m.group(1) != null) {
+      millis += Long.parseLong(m.group(1)) * 3_600_000L;
+    }
+    if (m.group(2) != null) {
+      millis += Long.parseLong(m.group(2)) * 60_000L;
+    }
+    if (m.group(3) != null) {
+      millis += (long) (Double.parseDouble(m.group(3)) * 1000);
+    }
+    return Optional.of(Duration.ofMillis(millis));
+  }
+
+  private static String firstLine(String message) {
+    if (message == null) {
+      return "";
+    }
+    int i = message.indexOf("Quota exceeded");
+    String text = i >= 0 ? message.substring(i) : message;
+    return text.lines().findFirst().orElse("").trim();
   }
 
   Duration backoff(int retry) {
