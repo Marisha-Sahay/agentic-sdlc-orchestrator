@@ -1,0 +1,1 @@
+Privacy, saturation and flush unit tests; statistics, retention, cached-expiry and contract conformance ITs; existing web and wiring tests know the recorder.

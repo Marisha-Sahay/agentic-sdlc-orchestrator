@@ -1,0 +1,6 @@
+Q-1: Campaign peaks of about 2,000 redirects/second; link creation stays low.
+Q-2: Redirect p99 latency under 50 ms at that load.
+Q-3: Per-link total clicks, last click time, daily counts for the last 7 days by
+     default and up to 90; a JSON API is enough, no dashboard.
+Q-4: Best effort is fine; statistics may lag by up to one minute.
+Q-5: No personal data: referrer host and browser/bot/other only; keep 90 days.

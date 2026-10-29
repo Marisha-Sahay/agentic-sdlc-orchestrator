@@ -11,12 +11,33 @@ requirement: |
     phishing (e.g. credentials-in-URL tricks, redirect loops) and rate-limit link creation.
   - Errors must be consistent and machine-readable. Publish an OpenAPI contract and docs.
   - Persist links in PostgreSQL.
+# DEMONSTRATION decisions, written with the scenario: used only with --approvals scripted (or
+# when replaying, where they are the scenario default) and recorded as "scripted-demo", never as
+# a human review. Each decision answers one request of its kind (acceptance unless stated) and
+# only if it covers every reason code of that request; anything else pauses the run.
+approvals: scripted
 scriptedApprovals:
   design:
     - approve: true
+      covers: [sign-off, api-contract-change]
       comment: >-
-        Design approved. Non-enumerable codes, 302 redirects (keeps analytics possible) and
-        soft delete match our standards.
+        Demonstration decision: non-enumerable codes, 302 redirects and soft delete accepted;
+        first version of the contract.
+  impl-persistence:
+    - approve: true
+      covers: [schema-migration]
+      comment: Demonstration decision - initial schema V1.
+  impl-web-api:
+    # The build-file change is authorized BEFORE anything is written or built.
+    - kind: authorization
+      approve: true
+      covers: [dependency-change]
+      comment: Demonstration decision - springdoc UI dependency and a resources copy step only.
+  tests:
+    - approve: true
+      covers: [change-size]
+      comment: Demonstration decision - initial test suite above the 800-line threshold.
   release:
     - approve: true
-      comment: Approved for staging after reviewing the patch, traceability matrix and risks.
+      covers: [sign-off]
+      comment: Demonstration decision - release accepted on the validated tree.

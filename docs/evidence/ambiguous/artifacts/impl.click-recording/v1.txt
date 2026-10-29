@@ -1,0 +1,2 @@
+Non-blocking recording from the redirect
+Files: [src/main/java/io/github/marishasahay/shortener/click/ClickRecorder.java, src/main/java/io/github/marishasahay/shortener/click/ClickMaintenance.java, src/main/java/io/github/marishasahay/shortener/link/RedirectController.java]

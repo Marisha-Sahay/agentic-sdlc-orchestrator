@@ -1,0 +1,2 @@
+Enforce expiry on cache hits (issue #1)
+Files: [src/main/java/io/github/marishasahay/shortener/link/CachedLink.java, src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java, src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java]

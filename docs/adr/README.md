@@ -17,3 +17,5 @@
 | [0013](0013-redirect-cache-and-expiry.md) | In-process redirect cache; expiry re-checked on every hit | Service |
 | [0014](0014-postgres-jdbcclient-testcontainers.md) | PostgreSQL with `JdbcClient` and Flyway, tested with Testcontainers | Service |
 | [0015](0015-in-process-rate-limiting.md) | In-process token-bucket rate limiting on link creation | Service |
+| [0016](0016-authorization-acceptance-and-tree-bound-evidence.md) | Authorize before execution, accept a validated tree, bind evidence to it | Governance |
+| [0017](0017-best-effort-click-analytics.md) | Best-effort click analytics through a bounded in-memory queue | Service |

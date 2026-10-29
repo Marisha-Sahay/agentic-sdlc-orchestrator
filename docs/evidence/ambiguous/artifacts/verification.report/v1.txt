@@ -1,0 +1,1 @@
+Build gate passed on the first run without repair. Verification profile: FULL: unit and integration tests, Checkstyle, coverage gate.

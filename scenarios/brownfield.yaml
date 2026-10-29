@@ -12,15 +12,34 @@ requirement: |
 
   2. Bug fix (issue #1). An expired link keeps redirecting while it is in the redirect cache.
      Once a link's expiresAt has passed, GET /{code} must return 410 Gone even if it was cached.
+# DEMONSTRATION decisions, written with the scenario: used only with --approvals scripted (or
+# when replaying, where they are the scenario default) and recorded as "scripted-demo", never as
+# a human review. Each decision answers one request of its kind (acceptance unless stated) and
+# only if it covers every reason code of that request; anything else pauses the run.
+approvals: scripted
 scriptedApprovals:
   design:
-    # First review sends the design back with feedback; the architect must address it.
+    # The first design is sent back: the requirement says "every redirect" but also "no
+    # noticeable latency" (open question Q-1); the reviewer wants the trade-off made explicit.
     - approve: false
+      covers: [sign-off, api-contract-change]
       comment: >-
-        Make the click-recording path explicitly asynchronous AND bounded (no unbounded queues;
-        say what happens when the buffer is full), and state a retention policy for click data.
+        Make click recording explicitly asynchronous AND bounded (no unbounded queue; say what
+        happens when it is full), state that it is best effort (Q-1), and add a retention policy.
     - approve: true
-      comment: Feedback addressed. Async bounded recording and retention policy are acceptable.
+      covers: [sign-off, api-contract-change]
+      comment: >-
+        Demonstration decision: best-effort recording accepted for Q-1 (bounded queue, counted
+        drops, flush on shutdown, documented loss cases); 90-day retention; additive contract.
+  impl-click-storage:
+    - approve: true
+      covers: [schema-migration]
+      comment: Demonstration decision - additive V2 table and indexes; V1 untouched.
+  tests:
+    - approve: true
+      covers: [change-size]
+      comment: Demonstration decision - test-only change set above the 800-line threshold.
   release:
     - approve: true
-      comment: Approved after reviewing the patch, migration, traceability and security review.
+      covers: [sign-off]
+      comment: Demonstration decision - release accepted on the validated tree.

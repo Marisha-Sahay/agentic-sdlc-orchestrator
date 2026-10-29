@@ -1,0 +1,2 @@
+Link lifecycle and redirect resolution
+Files: [src/main/java/io/github/marishasahay/shortener/link/LinkService.java, src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java]

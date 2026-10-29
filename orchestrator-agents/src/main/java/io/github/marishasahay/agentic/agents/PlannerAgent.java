@@ -15,8 +15,9 @@ public final class PlannerAgent implements NodeTask {
       - dependsOn lists ids of tasks whose code this task needs (e.g. repository before
         service). Tasks without a dependency between them can run in parallel; do not
         serialise needlessly, and never create cycles.
-      - Implementation tasks write main code only (src/main/**, migrations). Tests and docs are
-        separate later stages; do not plan them.
+      - Implementation tasks write main code only (src/main/**, migrations, and pom.xml when a
+        dependency is truly needed; a human must authorize that before it is built). Tests and
+        docs are separate later stages; do not plan them.
       - ids are short kebab-case (e.g. "click-repository"). At most %d tasks.""";
 
   private final AgentSupport llm;

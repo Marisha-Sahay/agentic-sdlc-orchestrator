@@ -129,7 +129,8 @@ class WorkflowTemplatesTest {
       assertThat(d.covers()).contains("sign-off");
     });
     assertThat(brownfield.startsFromExistingCode()).isTrue();
-    assertThat(brownfield.approvals()).isNull();
+    // A replay-only default: ApprovalModes ignores it for live and record runs.
+    assertThat(brownfield.approvals()).isEqualTo("scripted");
     assertThat(Scenario.load(SCENARIOS.resolve("drill.yaml")).approvals()).isEqualTo("scripted");
   }
 }

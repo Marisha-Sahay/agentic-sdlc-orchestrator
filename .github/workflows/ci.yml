@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -23,16 +23,23 @@ jobs:
       # Checkstyle and the 80% JaCoCo gate for every module.
       - name: Build and verify
         run: mvn -B -ntp verify
-      # End to end: every scenario with recorded (or hand-authored) model replies, including
-      # the governance drill. Real agents, policy, gates and Maven builds; no API key.
-      - name: Replay scenarios (no API key needed)
+      # The required scenarios are listed explicitly: a missing cassette set fails the build
+      # instead of being skipped. Replies are hand-authored fixtures (no API key); agents,
+      # policy, gates, Maven builds and the scripted demonstration reviewer are real.
+      - name: Replay the required scenarios
         run: |
-          for dir in cassettes/*/; do
-            scenario="$(basename "$dir")"
+          set -euo pipefail
+          for scenario in drill greenfield brownfield ambiguous; do
+            ls cassettes/"$scenario"/*.json > /dev/null \
+              || { echo "::error::no cassettes for required scenario $scenario"; exit 1; }
             ./agentic run "$scenario" --llm replay --approvals scripted --run-id "ci-$scenario"
             ./agentic verify-log "ci-$scenario"
+            ./agentic check-evidence ".runs/ci-$scenario"
           done
-          ./agentic metrics
+      - name: Check committed scenario evidence
+        run: ./agentic check-evidence drill greenfield brownfield ambiguous
+      - name: Build the final service (v1 + the validated brownfield patch)
+        run: tools/final-service.sh && mvn -B -ntp -f target/final-service/pom.xml verify
       - name: Upload run reports
         if: always()
         uses: actions/upload-artifact@v4

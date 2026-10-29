@@ -81,9 +81,10 @@ public final class Validators {
           problems.add(task.id() + " lists no files");
         }
         AgentSupport.list(task.files()).stream()
-            .filter(f -> !f.startsWith("src/main/") && !f.startsWith("api/"))
+            .filter(f -> !f.startsWith("src/main/") && !f.startsWith("api/")
+                && !f.equals("pom.xml"))
             .forEach(f -> problems.add(task.id() + " touches " + f
-                + " (implementation tasks may only change src/main/** or api/**)"));
+                + " (implementation tasks may only change src/main/**, api/** or pom.xml)"));
         if (AgentSupport.list(task.acceptanceCriteria()).isEmpty()) {
           problems.add(task.id() + " has no acceptance criteria");
         }

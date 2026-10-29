@@ -264,7 +264,9 @@ kind: BROWNFIELD
 title: Governance drill - fix issue #1 with planted faults (hand-authored model, no API key)
 baseline: url-shortener
 # The drill's reviewer decisions (including the amendment that triggers re-planning) are part
-# of the experiment, so it runs with the scripted reviewer unless --approvals says otherwise.
+# of the experiment, so replays use these DEMONSTRATION decisions unless --approvals says
+# otherwise. Each decision covers only the reasons it lists ("sign-off" by default); any other
+# approval request pauses the run instead of being approved.
 approvals: scripted
 requirement: |
   Fix issue #1: an expired link keeps redirecting while it is in the redirect cache. Once a
@@ -281,6 +283,10 @@ scriptedApprovals:
 {indent(json.dumps(SPEC_V2, indent=2), 10)}
     - approve: true
       comment: FR-3 addressed by the evict-on-delete decision plus a regression test.
+  impl-expiry-index:
+    - approve: true
+      covers: [schema-migration]
+      comment: Additive partial index in a new migration; V1 untouched.
   release:
     - approve: true
       comment: Approved after reviewing the patch, the V2 migration and the traceability matrix.

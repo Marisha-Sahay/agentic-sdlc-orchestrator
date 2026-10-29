@@ -240,6 +240,14 @@
     "publicMethods" : [ ],
     "lines" : 46
   }, {
+    "path" : "src/main/java/io/github/marishasahay/shortener/web/ApiContractController.java",
+    "name" : "ApiContractController",
+    "kind" : "class",
+    "role" : "controller",
+    "dependencies" : [ ],
+    "publicMethods" : [ "ResponseEntity<Resource> contract()" ],
+    "lines" : 32
+  }, {
     "path" : "src/main/java/io/github/marishasahay/shortener/web/FieldViolation.java",
     "name" : "FieldViolation",
     "kind" : "record",
@@ -272,6 +280,10 @@
     "method" : "GET",
     "path" : "/{code:[A-Za-z0-9_-]{4,32}}",
     "handler" : "RedirectController#redirect"
+  }, {
+    "method" : "GET",
+    "path" : "/openapi.yaml",
+    "handler" : "ApiContractController#contract"
   } ],
   "migrations" : [ "src/main/resources/db/migration/V1__create_links.sql" ],
   "resources" : [ "api/openapi.yaml", "src/main/resources/application.yml" ],

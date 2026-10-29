@@ -1,0 +1,12 @@
+{
+  "key": "release/e1/attempt-1/primary/release-manager",
+  "agent": "release-manager",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"title\": \"Click analytics and cached-expiry fix\", \"summary\": \"Best-effort click recording with per-link statistics, and expired links no longer redirect from cache.\", \"changes\": [\"link_clicks table (V2)\", \"Bounded asynchronous recording with counted drops\", \"GET /api/v1/links/{code}/stats\", \"90-day retention purge\", \"Expiry checked on every cache hit (issue #1)\"], \"risks\": [\"Clicks can be lost on saturation, failed batches or a crash (counted, documented)\", \"Statistics are unauthenticated (gateway required)\"], \"rollbackPlan\": \"Revert the commit. V2 is additive: leave it, or drop table link_clicks after reverting.\", \"testingSummary\": \"Unit tests for privacy reduction, saturation and flushing; Testcontainers ITs for statistics, retention, the expiry regression and contract conformance; final validation re-ran every check on the released tree.\", \"followUps\": [\"Referrer breakdown\", \"Durable click pipeline if exact counts become a requirement\"]}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-29T00:00:00Z",
+  "error": null
+}

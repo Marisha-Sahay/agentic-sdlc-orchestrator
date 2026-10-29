@@ -1,0 +1,11 @@
+{
+  "summary" : "Inputs are validated at the boundary, SQL is parameterised, codes come from SecureRandom and errors leak no internals.",
+  "findings" : [ {
+    "severity" : "MEDIUM",
+    "source" : "reviewer",
+    "category" : "access-control",
+    "location" : "LinkApiController",
+    "description" : "Create and delete are unauthenticated; anyone who knows a code can delete it",
+    "recommendation" : "Protect the management API at the gateway"
+  } ]
+}

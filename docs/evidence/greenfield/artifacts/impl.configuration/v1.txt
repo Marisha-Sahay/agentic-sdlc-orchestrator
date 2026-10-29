@@ -1,0 +1,2 @@
+Typed configuration, clock and redirect cache
+Files: [src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java, src/main/java/io/github/marishasahay/shortener/config/ClockConfiguration.java, src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java, src/main/resources/application.yml]

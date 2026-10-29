@@ -1,0 +1,42 @@
+# Clarifying questions
+
+## Q-1: What does 'heavy traffic' mean in numbers?
+
+*Why it matters:* Sizing, caching and whether new infrastructure is needed
+
+Options: hundreds/s | ~2,000/s | >10,000/s
+
+Recommended default: **Peak 2,000 redirects/s**
+
+## Q-2: What latency is 'not slow'?
+
+*Why it matters:* Defines the acceptance test for performance work
+
+Options: p99 < 50 ms | p99 < 200 ms
+
+Recommended default: **p99 < 50 ms**
+
+## Q-3: Which statistics, at what granularity?
+
+*Why it matters:* Determines the data model and the API
+
+Options: Totals only | Totals + daily counts | Raw click export
+
+Recommended default: **Per-link totals, last click, daily counts**
+
+## Q-4: Must every click be counted exactly, and how fresh must it be?
+
+*Why it matters:* Exact counting needs durable writes on the redirect path
+
+Options: Exact, real time | Best effort, < 1 minute lag
+
+Recommended default: **Best effort, up to 1 minute lag**
+
+## Q-5: What may we store about visitors, and for how long?
+
+*Why it matters:* Privacy and retention obligations
+
+Options: IP and user agent | Referrer host and agent family only
+
+Recommended default: **Referrer host and agent family; 90 days**
+

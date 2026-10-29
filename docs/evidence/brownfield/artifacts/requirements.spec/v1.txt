@@ -1,0 +1,60 @@
+{
+  "title" : "Click analytics and cached-expiry fix",
+  "problemStatement" : "The service records nothing about link usage, and expired links keep redirecting while cached because expiry is only checked on a miss.",
+  "goals" : [ "Per-link click statistics", "Expired links stop exactly at expiresAt" ],
+  "functionalRequirements" : [ {
+    "id" : "FR-1",
+    "description" : "Record each successful redirect (timestamp, referrer host, coarse user-agent family) asynchronously, so recording never delays or fails the redirect.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a successful redirect, when the recorder flushes, then one click row exists", "Given a 404 or 410 response, then no click is recorded", "Given a full buffer, then the redirect still returns 302 and the drop is counted" ]
+  }, {
+    "id" : "FR-2",
+    "description" : "GET /api/v1/links/{code}/stats returns total clicks, the last click time and daily counts for the last N UTC days (default 7).",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given clicks on two of three days, when days=3, then daily is [n, 0, m]", "Given an unknown or deleted code, then 404", "Given days outside 1..90, then 400 naming days" ]
+  }, {
+    "id" : "FR-3",
+    "description" : "Store no raw IP address or user-agent string, and no referrer path or query.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "The link_clicks table has no IP or user-agent column", "A referrer https://a.example/x?u=1 is stored as a.example" ]
+  }, {
+    "id" : "FR-4",
+    "description" : "Delete click data older than 90 days.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a click older than the retention period, when the purge runs, it is gone" ]
+  }, {
+    "id" : "FR-5",
+    "description" : "GET /{code} returns 410 once expiresAt has passed, even when the link is cached (issue #1).",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a cached link with expiresAt T, at T the redirect returns 410", "Given a cached link, when it is deleted, then the redirect returns 404" ]
+  } ],
+  "nonFunctionalRequirements" : [ {
+    "id" : "NFR-1",
+    "category" : "performance",
+    "description" : "Recording adds no database access to the redirect path.",
+    "measure" : "Unit test: record() only offers to an in-memory queue"
+  }, {
+    "id" : "NFR-2",
+    "category" : "compatibility",
+    "description" : "Existing operations stay backward compatible.",
+    "measure" : "api-compatibility gate (structural) and contract conformance test"
+  } ],
+  "ambiguities" : [ {
+    "id" : "Q-1",
+    "question" : "Must every redirect be recorded durably, or is best-effort recording acceptable?",
+    "whyItMatters" : "'Every redirect' and 'no noticeable latency' conflict: a durable record needs a synchronous write or a durable queue on the hot path; a bounded in-memory buffer is fast but loses clicks when full or on a crash.",
+    "options" : [ "Synchronous insert per redirect", "Durable queue (Kafka)", "Bounded in-memory buffer, drops counted" ],
+    "recommendedDefault" : "Bounded in-memory buffer with counted drops; document the loss cases"
+  } ],
+  "assumptions" : [ "Q-1 defaults to best effort unless the design review decides otherwise", "Statistics are per link; no cross-link reporting" ],
+  "outOfScope" : [ "Dashboards", "Geo-location", "Authentication" ],
+  "risks" : [ {
+    "description" : "Unbounded click growth",
+    "impact" : "database bloat",
+    "mitigation" : "90-day retention purge"
+  }, {
+    "description" : "Analytics slowing redirects",
+    "impact" : "user-visible latency",
+    "mitigation" : "asynchronous bounded queue"
+  } ]
+}

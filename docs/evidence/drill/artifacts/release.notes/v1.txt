@@ -20,3 +20,17 @@ Unit tests for hit/miss/boundary expiry and delete; full verify with Testcontain
 ## Follow-ups
 - Expired-link cleanup job
 - Metric for 410 responses
+
+## Validation evidence
+
+_Rendered from the audit log; not written by the model._
+
+- Validated tree: `51f75fa0757b5eeb5803a9ce24adfae3c30e8b79` (commit `0362f8683274`)
+- Verification: **FULL**
+- Builds and tests ran in: host process; environment reduced to [DOCKER_CERT_PATH, DOCKER_CONTEXT, DOCKER_HOST, DOCKER_TLS_VERIFY, HOME, JAVA_HOME, LANG, LC_ALL, LC_CTYPE, LOGNAME, M2_HOME, MAVEN_HOME, MAVEN_OPTS, PATH, SHELL, TMPDIR, TZ, USER] and [TESTCONTAINERS_]*; NOT isolated: filesystem, network and resources are the host's
+- Final gates on this tree:
+  - PASS evidence-freshness: validation.evidence satisfies the ValidationEvidence contract
+  - PASS maven-verify: exit 0: mvn -q -B -ntp verify
+  - PASS security-scan: no HIGH scanner findings in 6 changed files (0 lower-severity)
+  - PASS final-api-compatibility: structurally backward compatible: 4 baseline operations kept with their success statuses, request and required response properties (4 total); types, formats and behaviour are not checked by this gate
+  - PASS final-docs-coverage: README documents every API path

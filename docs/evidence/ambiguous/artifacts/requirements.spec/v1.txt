@@ -1,0 +1,50 @@
+{
+  "title" : "Click statistics and a verified latency target",
+  "problemStatement" : "Marketing needs per-link usage statistics and redirects that stay fast at campaign peaks (clarified with the stakeholder).",
+  "goals" : [ "Per-link statistics with at most a minute of lag", "Redirect latency target measured, not assumed" ],
+  "functionalRequirements" : [ {
+    "id" : "FR-1",
+    "description" : "Record each successful redirect (timestamp, referrer host, coarse user-agent family) asynchronously, so recording never delays or fails the redirect.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a successful redirect, when the recorder flushes, then one click row exists", "Given a 404 or 410 response, then no click is recorded", "Given a full buffer, then the redirect still returns 302 and the drop is counted" ]
+  }, {
+    "id" : "FR-2",
+    "description" : "GET /api/v1/links/{code}/stats returns total clicks, the last click time and daily counts for the last N UTC days (default 7).",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given clicks on two of three days, when days=3, then daily is [n, 0, m]", "Given an unknown or deleted code, then 404", "Given days outside 1..90, then 400 naming days" ]
+  }, {
+    "id" : "FR-3",
+    "description" : "Store no raw IP address or user-agent string, and no referrer path or query.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "The link_clicks table has no IP or user-agent column", "A referrer https://a.example/x?u=1 is stored as a.example" ]
+  }, {
+    "id" : "FR-4",
+    "description" : "Delete click data older than 90 days.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a click older than the retention period, when the purge runs, it is gone" ]
+  } ],
+  "nonFunctionalRequirements" : [ {
+    "id" : "NFR-1",
+    "category" : "performance",
+    "description" : "Recording adds no database access to the redirect path.",
+    "measure" : "Unit test: record() only offers to an in-memory queue"
+  }, {
+    "id" : "NFR-2",
+    "category" : "compatibility",
+    "description" : "Existing operations stay backward compatible.",
+    "measure" : "api-compatibility gate (structural) and contract conformance test"
+  }, {
+    "id" : "NFR-3",
+    "category" : "performance",
+    "description" : "Redirects sustain 2,000 requests/second with p99 below 50 ms on the reference deployment.",
+    "measure" : "Repeatable load test in tools/loadtest; reported, not a CI gate"
+  } ],
+  "ambiguities" : [ ],
+  "assumptions" : [ "Q-1: peak 2,000 redirects/s", "Q-2: p99 < 50 ms at that load", "Q-3: totals, last click, daily counts (7 days default, up to 90)", "Q-4: best effort is acceptable; up to 1 minute lag", "Q-5: referrer host and agent family only; 90-day retention" ],
+  "outOfScope" : [ "Dashboards", "Referrer breakdown", "Geo-location", "Authentication" ],
+  "risks" : [ {
+    "description" : "Performance target unverified in CI",
+    "impact" : "regressions go unnoticed",
+    "mitigation" : "repeatable load test with recorded results"
+  } ]
+}

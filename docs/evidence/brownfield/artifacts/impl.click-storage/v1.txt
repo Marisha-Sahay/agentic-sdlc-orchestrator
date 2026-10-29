@@ -1,0 +1,2 @@
+Click table, model and repository
+Files: [src/main/resources/db/migration/V2__create_link_clicks.sql, src/main/java/io/github/marishasahay/shortener/click/AgentFamily.java, src/main/java/io/github/marishasahay/shortener/click/ClickEvent.java, src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java, src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java, src/main/resources/application.yml]

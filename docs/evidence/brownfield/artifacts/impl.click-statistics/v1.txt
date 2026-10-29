@@ -1,0 +1,2 @@
+Statistics endpoint
+Files: [src/main/java/io/github/marishasahay/shortener/click/LinkStats.java, src/main/java/io/github/marishasahay/shortener/click/LinkStatsService.java, src/main/java/io/github/marishasahay/shortener/click/LinkStatsController.java]

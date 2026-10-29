@@ -1,0 +1,2 @@
+Links table and repository
+Files: [src/main/resources/db/migration/V1__create_links.sql, src/main/java/io/github/marishasahay/shortener/link/Link.java, src/main/java/io/github/marishasahay/shortener/link/LinkRepository.java]

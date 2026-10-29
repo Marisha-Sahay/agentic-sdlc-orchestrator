@@ -281,8 +281,9 @@ public final class AgenticCli {
     }
     int failures = 0;
     for (String name : names) {
-      EvidenceCheck.Result result = EvidenceCheck.check(repo.resolve("docs/evidence")
-          .resolve(name));
+      Path dir = name.contains("/") ? Path.of(name).toAbsolutePath()
+          : repo.resolve("docs/evidence").resolve(name);
+      EvidenceCheck.Result result = EvidenceCheck.check(dir);
       if (result.ok()) {
         System.out.println(Ansi.green("OK   ") + name + "  model replies: "
             + result.provenance());
@@ -538,7 +539,7 @@ public final class AgenticCli {
                                [--sandbox host|docker] [--cassettes <set>] [--run-id <id>]
                                [--max-parallel <n>]
         agentic resume <run-id> [--llm ...] [--approvals ...] [--reset-budgets <who>]
-        agentic check-evidence <name>...      verify saved evidence in docs/evidence/<name>
+        agentic check-evidence <name|dir>...  verify evidence in docs/evidence/<name> or a run dir
         agentic publish-evidence <run-id> <name>   copy a run's evidence to docs/evidence
         agentic warmup-sandbox       fill the Docker sandbox's dependency cache (network on)
         agentic stop <run-id>        engage the kill switch (safe stop, resumable)

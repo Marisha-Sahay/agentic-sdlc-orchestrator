@@ -1,0 +1,1707 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..8d757a4
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,15 @@
++# Changelog
++
++## Unreleased
++
++### Added
++- Click analytics: every successful redirect is recorded asynchronously and best effort (bounded
++  queue, batched writes, drops and failures counted as metrics); only the referrer host and a
++  coarse user-agent family are stored. Clicks are kept for 90 days.
++- `GET /api/v1/links/{code}/stats`: total clicks, last click and daily counts for the last
++  `days` UTC days (default 7, 1-90).
++- Migration `V2__create_link_clicks.sql`.
++
++### Fixed
++- Issue #1: an expired link no longer keeps redirecting while it is in the redirect cache; expiry
++  is checked on every lookup.
+diff --git a/README.md b/README.md
+index e9a01de..9d010d7 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,7 @@
+ # URL Shortener
+ 
+-A small URL shortener service (v1 baseline): create short links, redirect short codes, read link
+-metadata, and delete links. Spring Boot 4.1, Java 21, PostgreSQL (Flyway, `JdbcClient`),
++A small URL shortener service: create short links, redirect short codes, read link metadata and
++click statistics, and delete links. Spring Boot 4.1, Java 21, PostgreSQL (Flyway, `JdbcClient`),
+ Caffeine, Actuator. The API contract is in [`api/openapi.yaml`](api/openapi.yaml); a plain-English
+ guide with sample requests and every possible response is in [`API.md`](API.md).
+ 
+@@ -39,10 +39,10 @@ A walkthrough that exercises every behaviour:
+ 6. Invalid input returns 400 with an `errors` list: leave out `url`, use
+    `https://bank.com@evil.com`, or use the reserved alias `swagger`.
+ 7. More than 20 `POST`s within a minute return 429 with `Retry-After`.
+-8. Expiry: create a link whose `expiresAt` is a minute ahead and wait; `GET /{code}` returns 410.
+-   If you followed the link before it expired, it keeps redirecting until its cache entry
+-   expires (up to 10 minutes). That is the known defect the brownfield scenario fixes
+-   ([issue #1](../docs/scenarios/brownfield.md)).
++8. Expiry: create a link whose `expiresAt` is a minute ahead and wait; `GET /{code}` returns 410,
++   also if you followed the link before it expired (the cache re-checks expiry on every hit).
++9. Statistics: follow a link a few times, wait a second (clicks are written in the background),
++   then `GET /api/v1/links/{code}/stats` (optionally `?days=30`).
+ 
+ Swagger UI is a development aid; switch it off with `SPRINGDOC_SWAGGERUI_ENABLED=false`.
+ 
+@@ -76,6 +76,9 @@ curl -i http://localhost:8080/launch-2026
+ # Link metadata -> 200 (404 if unknown or deleted)
+ curl -i http://localhost:8080/api/v1/links/launch-2026
+ 
++# Click statistics -> 200: total, last click, daily counts for the last 7 UTC days (?days=1..90)
++curl -i http://localhost:8080/api/v1/links/launch-2026/stats?days=7
++
+ # Delete (soft) -> 204, then 404; the code is never reused
+ curl -i -X DELETE http://localhost:8080/api/v1/links/launch-2026
+ 
+@@ -115,6 +118,11 @@ binding, e.g. `SHORTENER_BASEURL`) or command-line arguments, e.g.
+ | `shortener.rate-limit.period` | `SHORTENER_RATELIMIT_PERIOD` | `1m` | Period over which the bucket refills completely |
+ | `shortener.rate-limit.max-tracked-clients` | `SHORTENER_RATELIMIT_MAXTRACKEDCLIENTS` | `100000` | Upper bound on in-memory buckets |
+ | `shortener.trust-forwarded-headers` | `SHORTENER_TRUSTFORWARDEDHEADERS` | `false` | Key the rate limit on the first `X-Forwarded-For` hop (only behind a trusted proxy) |
++| `shortener.clicks.queue-capacity` | `SHORTENER_CLICKS_QUEUECAPACITY` | `10000` | Clicks buffered in memory before new ones are dropped |
++| `shortener.clicks.batch-size` | `SHORTENER_CLICKS_BATCHSIZE` | `500` | Clicks written per insert |
++| `shortener.clicks.flush-interval` | `SHORTENER_CLICKS_FLUSHINTERVAL` | `1s` | How often queued clicks are written (statistics lag) |
++| `shortener.clicks.retention` | `SHORTENER_CLICKS_RETENTION` | `90d` | Clicks older than this are deleted; also the longest `days` window |
++| `shortener.clicks.purge-interval` | `SHORTENER_CLICKS_PURGEINTERVAL` | `1h` | How often the retention purge runs |
+ 
+ Invalid values (e.g. `code-length=3`) fail startup.
+ 
+@@ -134,9 +142,26 @@ Invalid values (e.g. `code-length=3`) fail startup.
+   A taken alias returns 409.
+ - **Soft delete.** `DELETE` sets `deleted_at`; the row keeps its code, so a code is never reused
+   (re-creating the alias returns 409). The redirect cache entry is evicted on delete.
+-- **Redirect cache.** `LinkResolver` keeps a Caffeine cache of `code -> target URL` (TTL and size
+-  configurable, statistics exported as `cache.*` metrics). On a miss it loads the link from the
+-  database and applies the not-found and expiry checks; unknown codes are not cached.
++- **Redirect cache.** `LinkResolver` keeps a Caffeine cache of `code -> (target URL, expiry)`
++  (TTL and size configurable, statistics exported as `cache.*` metrics). Expiry is checked on
++  every lookup, hit or miss, so a cached link stops redirecting exactly at `expiresAt` (issue #1);
++  unknown codes are not cached.
++- **Click analytics (best effort, by design).** A successful redirect offers a click to a
++  bounded in-memory queue and returns; it never waits for the database. A background task writes
++  the queue in batches every second. Consequences, accepted at design review:
++  - *Saturation:* when the queue (10,000) is full, new clicks are dropped and counted in
++    `shortener.clicks.dropped`; redirects are never slowed down or failed by analytics.
++  - *Loss:* a failed batch insert loses that batch (`shortener.clicks.failed`); a crash or
++    `kill -9` loses what is queued (at most one flush interval of clicks); a graceful shutdown
++    flushes first. Clicks are not retried, so they are never duplicated.
++  - *Freshness:* statistics lag redirects by about the flush interval.
++  - *Privacy:* only the referrer **host** and a coarse agent family (browser, bot, other) are
++    stored; no IP address, no user-agent string, no referrer path or query.
++  - *Retention and windows:* clicks older than 90 days are purged hourly; `totalClicks` covers the
++    retained clicks; `days` selects 1 to 90 whole UTC days ending today, zero-filled. Indexes
++    `(code, clicked_at)` and `(clicked_at)` serve the statistics queries and the purge.
++  - A link's statistics are available while the link exists (also after it expires); deleted
++    links return 404. 404 and 410 responses are not counted.
+ - **Rate limiting.** A hand-rolled per-client token bucket (`RateLimiter`) on
+   `POST /api/v1/links` only, applied by a Spring MVC interceptor so rejections are rendered by
+   the same ProblemDetail advice (429 + `Retry-After`). Refill uses exact integer arithmetic on
+@@ -156,8 +181,24 @@ src/main/java/io/github/marishasahay/shortener/
+   UrlShortenerApplication.java
+   config/     ShortenerProperties, ClockConfiguration, CacheConfiguration
+   link/       domain, service, repository, controllers, policies, code generator, DTOs, exceptions
++  click/      ClickRecorder (bounded async queue), ClickRepository, statistics service/controller
+   ratelimit/  RateLimiter, TokenBucket, interceptor and its registration
+   web/        ProblemDetailsAdvice (RFC 9457 error mapping), ApiContractController (/openapi.yaml)
+-src/main/resources/db/migration/V1__create_links.sql
++src/main/resources/db/migration/V1__create_links.sql, V2__create_link_clicks.sql
+ api/openapi.yaml    the API contract; also what Swagger UI shows
+ ```
++
++## Scale and reliability boundaries
++
++The service is designed for a single region behind a trusted reverse proxy. What holds, and what
++does not, when it runs as several instances:
++
++| Concern | Behaviour | Boundary |
++|---|---|---|
++| Expiry | Enforced on every redirect from the cached `expiresAt`, on every instance | Clock skew between instances shifts it by the skew |
++| Deletion | The deleting instance evicts its cache entry immediately | Other instances may keep redirecting a deleted link until their entry's TTL ends (10 minutes by default); a shared cache or an invalidation broadcast would close this |
++| Rate limiting | Token bucket per client and per instance | N instances allow N times the limit; a shared store (e.g. Redis) is the scale-out answer |
++| Hot links | Cache hits never touch the database; a miss is one indexed query | Click recording adds one batched insert per 500 clicks per instance, not one per redirect |
++| Analytics backpressure | Bounded queue, drops counted | Not durable: use a durable log (e.g. Kafka) if every click must be counted |
++| Management API | `POST`/`GET`/`DELETE` and statistics are unauthenticated; anyone who knows a code can delete it or read its statistics | Must be protected at the gateway (authentication, ownership) before exposure beyond trusted callers |
++| Throughput | No load target is verified in CI | See the load test in `tools/loadtest` and its documented results for one machine |
+diff --git a/api/openapi.yaml b/api/openapi.yaml
+index cf8c086..7fb3b0e 100644
+--- a/api/openapi.yaml
++++ b/api/openapi.yaml
+@@ -1,7 +1,7 @@
+ openapi: 3.1.0
+ info:
+   title: URL Shortener API
+-  version: 1.0.0
++  version: 1.1.0
+   description: |
+     Creates short links and redirects short codes to their target URLs.
+ 
+@@ -95,6 +95,47 @@ paths:
+         '500':
+           $ref: '#/components/responses/InternalServerError'
+ 
++  /api/v1/links/{code}/stats:
++    parameters:
++      - name: code
++        in: path
++        required: true
++        description: The short code.
++        schema:
++          type: string
++    get:
++      operationId: getLinkStats
++      summary: Get click statistics
++      description: |
++        Clicks of an active (not deleted) link, including expired links. Recording is best
++        effort and asynchronous: statistics lag redirects by about the flush interval (1 s by
++        default), and clicks are dropped (and counted in the `shortener.clicks.dropped` metric)
++        if the in-memory buffer is full or the process stops abruptly. Totals cover the
++        retention period (90 days by default). No IP addresses or user-agent strings are stored.
++      parameters:
++        - name: days
++          in: query
++          required: false
++          description: Number of UTC days in `daily`, including today (1 to the retention period).
++          schema:
++            type: integer
++            minimum: 1
++            maximum: 90
++            default: 7
++      responses:
++        '200':
++          description: The statistics.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/LinkStats'
++        '400':
++          $ref: '#/components/responses/BadRequest'
++        '404':
++          $ref: '#/components/responses/NotFound'
++        '500':
++          $ref: '#/components/responses/InternalServerError'
++
+   /{code}:
+     parameters:
+       - name: code
+@@ -111,7 +152,9 @@ paths:
+       summary: Redirect to the target URL
+       description: |
+         Responds with `302 Found` (not 301) and `Cache-Control: no-store`, so browsers do not
+-        cache the redirect and every visit reaches the service.
++        cache the redirect and every visit reaches the service. Expiry is enforced on every
++        request, including when the link is cached. Each redirect is offered to the click
++        recorder (best effort, see `getLinkStats`); 404 and 410 responses are not counted.
+       responses:
+         '302':
+           description: Redirect to the target URL.
+@@ -189,6 +232,52 @@ components:
+           description: '`null` when the link never expires.'
+           examples: [null]
+ 
++    LinkStats:
++      type: object
++      required: [code, totalClicks, lastClickAt, from, to, daily]
++      properties:
++        code:
++          type: string
++          examples: [launch-2026]
++        totalClicks:
++          type: integer
++          format: int64
++          description: Clicks recorded within the retention period.
++          examples: [42]
++        lastClickAt:
++          type: [string, 'null']
++          format: date-time
++          description: '`null` when no click has been recorded.'
++          examples: ['2026-01-07T09:30:00Z']
++        from:
++          type: string
++          format: date
++          description: First UTC day of `daily`.
++          examples: ['2026-01-01']
++        to:
++          type: string
++          format: date
++          description: Last UTC day of `daily` (today).
++          examples: ['2026-01-07']
++        daily:
++          type: array
++          description: One entry per UTC day from `from` to `to`, oldest first; days without clicks have 0.
++          items:
++            $ref: '#/components/schemas/DailyClicks'
++
++    DailyClicks:
++      type: object
++      required: [date, clicks]
++      properties:
++        date:
++          type: string
++          format: date
++          examples: ['2026-01-07']
++        clicks:
++          type: integer
++          format: int64
++          examples: [5]
++
+     ProblemDetail:
+       type: object
+       description: RFC 9457 problem document.
+@@ -234,7 +323,8 @@ components:
+     BadRequest:
+       description: |
+         Invalid request: bean validation failure (missing `url`), target URL or alias policy
+-        violation, expiry not in the future, or malformed / unparseable JSON.
++        violation, expiry not in the future, a statistics window (`days`) out of range, or
++        malformed / unparseable JSON.
+       content:
+         application/problem+json:
+           schema:
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/AgentFamily.java b/src/main/java/io/github/marishasahay/shortener/click/AgentFamily.java
+new file mode 100644
+index 0000000..d0cb1fc
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/AgentFamily.java
+@@ -0,0 +1,36 @@
++package io.github.marishasahay.shortener.click;
++
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * Coarse user-agent family stored with a click instead of the user-agent string, which can
++ * fingerprint a visitor.
++ */
++public enum AgentFamily {
++  BROWSER,
++  BOT,
++  OTHER;
++
++  private static final List<String> BOT_MARKERS = List.of("bot", "crawler", "spider", "slurp",
++      "curl", "wget", "python-requests", "httpclient", "okhttp", "headless");
++  private static final List<String> BROWSER_MARKERS = List.of("mozilla", "chrome", "safari",
++      "firefox", "edg", "opera");
++
++  /**
++   * Classifies a user-agent header.
++   *
++   * @param userAgent the header value, possibly null
++   * @return the family; bots win over browsers because most bots claim to be Mozilla
++   */
++  public static AgentFamily of(String userAgent) {
++    if (userAgent == null || userAgent.isBlank()) {
++      return OTHER;
++    }
++    String ua = userAgent.toLowerCase(Locale.ROOT);
++    if (BOT_MARKERS.stream().anyMatch(ua::contains)) {
++      return BOT;
++    }
++    return BROWSER_MARKERS.stream().anyMatch(ua::contains) ? BROWSER : OTHER;
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/ClickEvent.java b/src/main/java/io/github/marishasahay/shortener/click/ClickEvent.java
+new file mode 100644
+index 0000000..483bf06
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/ClickEvent.java
+@@ -0,0 +1,58 @@
++package io.github.marishasahay.shortener.click;
++
++import java.net.URI;
++import java.time.Instant;
++import java.util.Locale;
++
++/**
++ * One successful redirect, reduced to what analytics needs. No IP address, no user-agent string
++ * and no referrer path or query (which can carry personal data) are kept.
++ *
++ * @param code the short code that was followed
++ * @param clickedAt when the redirect was served
++ * @param referrerHost host of the {@code Referer} header, or null
++ * @param agentFamily coarse user-agent family
++ */
++public record ClickEvent(String code, Instant clickedAt, String referrerHost,
++    AgentFamily agentFamily) {
++
++  static final int MAX_HOST_LENGTH = 255;
++
++  /**
++   * Builds an event from raw request headers.
++   *
++   * @param code the short code
++   * @param clickedAt when the redirect was served
++   * @param referer the {@code Referer} header, possibly null
++   * @param userAgent the {@code User-Agent} header, possibly null
++   * @return the reduced event
++   */
++  public static ClickEvent of(String code, Instant clickedAt, String referer, String userAgent) {
++    return new ClickEvent(code, clickedAt, referrerHost(referer), AgentFamily.of(userAgent));
++  }
++
++  /**
++   * Host part of a referrer URL.
++   *
++   * @param referer header value
++   * @return lower-case host, or null if absent or not an absolute http(s) URL
++   */
++  static String referrerHost(String referer) {
++    if (referer == null || referer.isBlank()) {
++      return null;
++    }
++    try {
++      URI uri = URI.create(referer.strip());
++      String scheme = uri.getScheme();
++      String host = uri.getHost();
++      if (host == null || scheme == null
++          || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
++        return null;
++      }
++      String normalised = host.toLowerCase(Locale.ROOT);
++      return normalised.length() > MAX_HOST_LENGTH ? null : normalised;
++    } catch (IllegalArgumentException e) {
++      return null;
++    }
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/ClickMaintenance.java b/src/main/java/io/github/marishasahay/shortener/click/ClickMaintenance.java
+new file mode 100644
+index 0000000..48f8a3d
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/ClickMaintenance.java
+@@ -0,0 +1,60 @@
++package io.github.marishasahay.shortener.click;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import java.time.Clock;
++import java.time.Duration;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
++import org.springframework.scheduling.annotation.EnableScheduling;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++
++/**
++ * Background work for click analytics: flushing the queue and enforcing retention. Disabled
++ * with {@code shortener.clicks.scheduling-enabled=false} (tests flush explicitly).
++ */
++@Component
++@EnableScheduling
++@ConditionalOnProperty(name = "shortener.clicks.scheduling-enabled", havingValue = "true",
++    matchIfMissing = true)
++public class ClickMaintenance {
++
++  private static final Logger LOG = LoggerFactory.getLogger(ClickMaintenance.class);
++
++  private final ClickRecorder recorder;
++  private final ClickRepository repository;
++  private final Duration retention;
++  private final Clock clock;
++
++  /**
++   * Creates the scheduler.
++   *
++   * @param recorder the recorder to flush
++   * @param repository click persistence
++   * @param properties retention settings
++   * @param clock time source
++   */
++  public ClickMaintenance(ClickRecorder recorder, ClickRepository repository,
++      ShortenerProperties properties, Clock clock) {
++    this.recorder = recorder;
++    this.repository = repository;
++    this.retention = properties.clicks().retention();
++    this.clock = clock;
++  }
++
++  /** Writes queued clicks; statistics lag real time by about this interval. */
++  @Scheduled(fixedDelayString = "${shortener.clicks.flush-interval:1s}")
++  public void flush() {
++    recorder.flush();
++  }
++
++  /** Deletes clicks older than the retention period. */
++  @Scheduled(fixedDelayString = "${shortener.clicks.purge-interval:1h}")
++  public void purge() {
++    int deleted = repository.deleteOlderThan(clock.instant().minus(retention));
++    if (deleted > 0) {
++      LOG.info("Deleted {} clicks older than {}", deleted, retention);
++    }
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/ClickRecorder.java b/src/main/java/io/github/marishasahay/shortener/click/ClickRecorder.java
+new file mode 100644
+index 0000000..08b0037
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/ClickRecorder.java
+@@ -0,0 +1,104 @@
++package io.github.marishasahay.shortener.click;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.micrometer.core.instrument.Counter;
++import io.micrometer.core.instrument.MeterRegistry;
++import jakarta.annotation.PreDestroy;
++import java.time.Clock;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.ArrayBlockingQueue;
++import java.util.concurrent.BlockingQueue;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Component;
++
++/**
++ * Records clicks off the redirect path, best effort. The redirect only offers the click to a
++ * bounded in-memory queue (never blocks, never touches the database); a scheduled flusher writes
++ * queued clicks in batches. Clicks are lost, and counted, when the queue is full, when a batch
++ * insert fails, or when the process dies before a flush; a graceful shutdown flushes first.
++ * Counters: {@code shortener.clicks.recorded}, {@code .dropped} and {@code .failed}.
++ */
++@Component
++public class ClickRecorder {
++
++  private static final Logger LOG = LoggerFactory.getLogger(ClickRecorder.class);
++
++  private final BlockingQueue<ClickEvent> queue;
++  private final int batchSize;
++  private final ClickRepository repository;
++  private final Clock clock;
++  private final Counter recorded;
++  private final Counter dropped;
++  private final Counter failed;
++
++  /**
++   * Creates the recorder.
++   *
++   * @param properties queue capacity and batch size
++   * @param repository click persistence
++   * @param clock time source
++   * @param meterRegistry where the counters are published
++   */
++  public ClickRecorder(ShortenerProperties properties, ClickRepository repository, Clock clock,
++      MeterRegistry meterRegistry) {
++    ShortenerProperties.Clicks settings = properties.clicks();
++    this.queue = new ArrayBlockingQueue<>(settings.queueCapacity());
++    this.batchSize = settings.batchSize();
++    this.repository = repository;
++    this.clock = clock;
++    this.recorded = meterRegistry.counter("shortener.clicks.recorded");
++    this.dropped = meterRegistry.counter("shortener.clicks.dropped");
++    this.failed = meterRegistry.counter("shortener.clicks.failed");
++    meterRegistry.gaugeCollectionSize("shortener.clicks.queued", List.of(), queue);
++  }
++
++  /**
++   * Offers a click for recording. Constant time; never blocks the caller.
++   *
++   * @param code the short code that was followed
++   * @param referer the {@code Referer} header, possibly null
++   * @param userAgent the {@code User-Agent} header, possibly null
++   * @return whether the click was queued (false: queue full, click dropped and counted)
++   */
++  public boolean record(String code, String referer, String userAgent) {
++    if (queue.offer(ClickEvent.of(code, clock.instant(), referer, userAgent))) {
++      return true;
++    }
++    dropped.increment();
++    return false;
++  }
++
++  /**
++   * Writes every queued click, in batches. Called on a fixed delay and at shutdown.
++   *
++   * @return number of clicks written
++   */
++  public synchronized int flush() {
++    int written = 0;
++    List<ClickEvent> batch = new ArrayList<>(batchSize);
++    while (queue.drainTo(batch, batchSize) > 0) {
++      try {
++        repository.insertBatch(batch);
++        recorded.increment(batch.size());
++        written += batch.size();
++      } catch (RuntimeException e) {
++        failed.increment(batch.size());
++        LOG.warn("Lost {} clicks: batch insert failed ({})", batch.size(), e.getMessage());
++      }
++      batch.clear();
++    }
++    return written;
++  }
++
++  /** Flushes what is queued before the application stops. */
++  @PreDestroy
++  public void flushOnShutdown() {
++    flush();
++  }
++
++  int queued() {
++    return queue.size();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java b/src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java
+new file mode 100644
+index 0000000..181dcd6
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java
+@@ -0,0 +1,116 @@
++package io.github.marishasahay.shortener.click;
++
++import java.sql.Types;
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.OffsetDateTime;
++import java.time.ZoneOffset;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.jdbc.core.SqlParameterValue;
++import org.springframework.jdbc.core.simple.JdbcClient;
++import org.springframework.stereotype.Repository;
++
++/** Explicit-SQL persistence for clicks. */
++@Repository
++public class ClickRepository {
++
++  private static final String INSERT_SQL = """
++      insert into link_clicks (code, clicked_at, referrer_host, agent_family)
++      values (?, ?, ?, ?)
++      """;
++
++  private static final String TOTALS_SQL = """
++      select count(*) as total, max(clicked_at) as last_click
++        from link_clicks
++       where code = :code
++      """;
++
++  private static final String DAILY_SQL = """
++      select cast(clicked_at at time zone 'UTC' as date) as day, count(*) as clicks
++        from link_clicks
++       where code = :code
++         and clicked_at >= :from
++       group by day
++      """;
++
++  private static final String PURGE_SQL = "delete from link_clicks where clicked_at < :cutoff";
++
++  private final JdbcClient jdbcClient;
++  private final JdbcTemplate jdbcTemplate;
++
++  public ClickRepository(JdbcClient jdbcClient, JdbcTemplate jdbcTemplate) {
++    this.jdbcClient = jdbcClient;
++    this.jdbcTemplate = jdbcTemplate;
++  }
++
++  /**
++   * Inserts a batch of clicks in one round trip.
++   *
++   * @param events clicks to store
++   */
++  public void insertBatch(List<ClickEvent> events) {
++    jdbcTemplate.batchUpdate(INSERT_SQL, events, events.size(), (ps, event) -> {
++      ps.setString(1, event.code());
++      ps.setObject(2, event.clickedAt().atOffset(ZoneOffset.UTC),
++          Types.TIMESTAMP_WITH_TIMEZONE);
++      ps.setString(3, event.referrerHost());
++      ps.setString(4, event.agentFamily().name());
++    });
++  }
++
++  /**
++   * Total clicks and the time of the last one for a code.
++   *
++   * @param code the short code
++   * @return totals over the retained clicks
++   */
++  public Totals totals(String code) {
++    return jdbcClient.sql(TOTALS_SQL).param("code", code)
++        .query((rs, row) -> {
++          OffsetDateTime last = rs.getObject("last_click", OffsetDateTime.class);
++          return new Totals(rs.getLong("total"), last == null ? null : last.toInstant());
++        })
++        .single();
++  }
++
++  /**
++   * Clicks per UTC day since an instant; days without clicks are absent.
++   *
++   * @param code the short code
++   * @param from start of the window (inclusive)
++   * @return day to clicks
++   */
++  public Map<LocalDate, Long> dailyCounts(String code, Instant from) {
++    Map<LocalDate, Long> counts = new LinkedHashMap<>();
++    jdbcClient.sql(DAILY_SQL).param("code", code).param("from", timestamp(from))
++        .query((rs, row) -> Map.entry(rs.getObject("day", LocalDate.class), rs.getLong("clicks")))
++        .list()
++        .forEach(entry -> counts.put(entry.getKey(), entry.getValue()));
++    return counts;
++  }
++
++  /**
++   * Deletes clicks older than the retention cutoff.
++   *
++   * @param cutoff clicks before this instant are deleted
++   * @return number of deleted clicks
++   */
++  public int deleteOlderThan(Instant cutoff) {
++    return jdbcClient.sql(PURGE_SQL).param("cutoff", timestamp(cutoff)).update();
++  }
++
++  private static SqlParameterValue timestamp(Instant instant) {
++    return new SqlParameterValue(Types.TIMESTAMP_WITH_TIMEZONE, instant.atOffset(ZoneOffset.UTC));
++  }
++
++  /**
++   * Aggregate over all retained clicks of a code.
++   *
++   * @param total number of clicks
++   * @param lastClickAt most recent click, or null if none
++   */
++  public record Totals(long total, Instant lastClickAt) {}
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/LinkStats.java b/src/main/java/io/github/marishasahay/shortener/click/LinkStats.java
+new file mode 100644
+index 0000000..57639db
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/LinkStats.java
+@@ -0,0 +1,27 @@
++package io.github.marishasahay.shortener.click;
++
++import java.time.Instant;
++import java.time.LocalDate;
++import java.util.List;
++
++/**
++ * Click statistics of one link.
++ *
++ * @param code the short code
++ * @param totalClicks clicks recorded within the retention period
++ * @param lastClickAt most recent recorded click, or null
++ * @param from first day of the daily window (UTC)
++ * @param to last day of the daily window (UTC, today)
++ * @param daily clicks per UTC day, oldest first, zero-filled
++ */
++public record LinkStats(String code, long totalClicks, Instant lastClickAt, LocalDate from,
++    LocalDate to, List<DailyClicks> daily) {
++
++  /**
++   * Clicks on one UTC day.
++   *
++   * @param date the day
++   * @param clicks number of clicks
++   */
++  public record DailyClicks(LocalDate date, long clicks) {}
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/LinkStatsController.java b/src/main/java/io/github/marishasahay/shortener/click/LinkStatsController.java
+new file mode 100644
+index 0000000..8376e81
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/LinkStatsController.java
+@@ -0,0 +1,33 @@
++package io.github.marishasahay.shortener.click;
++
++import io.github.marishasahay.shortener.link.LinkApiController;
++import org.springframework.http.MediaType;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++/** Click statistics of a link. */
++@RestController
++public class LinkStatsController {
++
++  private final LinkStatsService statsService;
++
++  public LinkStatsController(LinkStatsService statsService) {
++    this.statsService = statsService;
++  }
++
++  /**
++   * Returns click statistics.
++   *
++   * @param code the short code
++   * @param days number of UTC days in the daily breakdown, including today
++   * @return the statistics
++   */
++  @GetMapping(path = LinkApiController.BASE_PATH + "/{code}/stats",
++      produces = MediaType.APPLICATION_JSON_VALUE)
++  public LinkStats stats(@PathVariable String code,
++      @RequestParam(defaultValue = "7") int days) {
++    return statsService.stats(code, days);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/click/LinkStatsService.java b/src/main/java/io/github/marishasahay/shortener/click/LinkStatsService.java
+new file mode 100644
+index 0000000..290e50c
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/click/LinkStatsService.java
+@@ -0,0 +1,68 @@
++package io.github.marishasahay.shortener.click;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.link.InvalidLinkRequestException;
++import io.github.marishasahay.shortener.link.LinkNotFoundException;
++import io.github.marishasahay.shortener.link.LinkRepository;
++import java.time.Clock;
++import java.time.LocalDate;
++import java.time.ZoneOffset;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Map;
++import org.springframework.stereotype.Service;
++
++/** Builds a link's click statistics for a window of whole UTC days ending today. */
++@Service
++public class LinkStatsService {
++
++  static final String DAYS_PARAMETER = "days";
++
++  private final LinkRepository links;
++  private final ClickRepository clicks;
++  private final Clock clock;
++  private final int maxDays;
++
++  /**
++   * Creates the service.
++   *
++   * @param links link persistence (the link must exist and not be deleted)
++   * @param clicks click persistence
++   * @param properties retention, which bounds the window
++   * @param clock time source
++   */
++  public LinkStatsService(LinkRepository links, ClickRepository clicks,
++      ShortenerProperties properties, Clock clock) {
++    this.links = links;
++    this.clicks = clicks;
++    this.clock = clock;
++    this.maxDays = (int) properties.clicks().retention().toDays();
++  }
++
++  /**
++   * Statistics for the last {@code days} UTC days, including today.
++   *
++   * @param code the short code
++   * @param days window length, 1 to the retention period in days
++   * @return the statistics
++   * @throws InvalidLinkRequestException if {@code days} is out of range
++   * @throws LinkNotFoundException if no active link exists for the code
++   */
++  public LinkStats stats(String code, int days) {
++    if (days < 1 || days > maxDays) {
++      throw new InvalidLinkRequestException(DAYS_PARAMETER,
++          "must be between 1 and " + maxDays);
++    }
++    links.findActiveByCode(code).orElseThrow(() -> new LinkNotFoundException(code));
++    LocalDate to = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
++    LocalDate from = to.minusDays(days - 1L);
++    Map<LocalDate, Long> counts = clicks.dailyCounts(code,
++        from.atStartOfDay(ZoneOffset.UTC).toInstant());
++    List<LinkStats.DailyClicks> daily = new ArrayList<>();
++    for (LocalDate day = from; !day.isAfter(to); day = day.plusDays(1)) {
++      daily.add(new LinkStats.DailyClicks(day, counts.getOrDefault(day, 0L)));
++    }
++    ClickRepository.Totals totals = clicks.totals(code);
++    return new LinkStats(code, totals.total(), totals.lastClickAt(), from, to, daily);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+index c075d3c..12f88ae 100644
+--- a/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
++++ b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+@@ -2,14 +2,15 @@ package io.github.marishasahay.shortener.config;
+ 
+ import com.github.benmanes.caffeine.cache.Cache;
+ import com.github.benmanes.caffeine.cache.Caffeine;
++import io.github.marishasahay.shortener.link.CachedLink;
+ import io.micrometer.core.instrument.MeterRegistry;
+ import io.micrometer.core.instrument.binder.cache.CaffeineCacheMetrics;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ 
+ /**
+- * Builds the redirect cache ({@code code -> target URL}) and publishes its statistics as
+- * Micrometer metrics under {@code cache.*} with tag {@code cache=redirects}.
++ * Builds the redirect cache ({@code code -> target URL and expiry}) and publishes its statistics
++ * as Micrometer metrics under {@code cache.*} with tag {@code cache=redirects}.
+  */
+ @Configuration(proxyBeanMethods = false)
+ public class CacheConfiguration {
+@@ -17,10 +18,10 @@ public class CacheConfiguration {
+   static final String REDIRECT_CACHE_NAME = "redirects";
+ 
+   @Bean
+-  public Cache<String, String> redirectCache(ShortenerProperties properties,
++  public Cache<String, CachedLink> redirectCache(ShortenerProperties properties,
+       MeterRegistry meterRegistry) {
+     ShortenerProperties.RedirectCache settings = properties.redirectCache();
+-    Cache<String, String> cache = Caffeine.newBuilder()
++    Cache<String, CachedLink> cache = Caffeine.newBuilder()
+         .expireAfterWrite(settings.ttl())
+         .maximumSize(settings.maxSize())
+         .recordStats()
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java b/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java
+index b4ab651..0351659 100644
+--- a/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java
++++ b/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java
+@@ -19,6 +19,7 @@ import org.springframework.validation.annotation.Validated;
+  * @param redirectCache redirect cache settings
+  * @param rateLimit rate limit settings for link creation
+  * @param trustForwardedHeaders whether to key rate limiting on the first X-Forwarded-For hop
++ * @param clicks click analytics settings
+  */
+ @Validated
+ @ConfigurationProperties(prefix = "shortener")
+@@ -27,7 +28,8 @@ public record ShortenerProperties(
+     @DefaultValue("7") @Min(4) @Max(32) int codeLength,
+     @DefaultValue @Valid RedirectCache redirectCache,
+     @DefaultValue @Valid RateLimit rateLimit,
+-    @DefaultValue("false") boolean trustForwardedHeaders) {
++    @DefaultValue("false") boolean trustForwardedHeaders,
++    @DefaultValue @Valid Clicks clicks) {
+ 
+   /**
+    * Settings for the in-memory {@code code -> target URL} cache.
+@@ -51,4 +53,16 @@ public record ShortenerProperties(
+       @DefaultValue("20") @Positive int requestsPerPeriod,
+       @DefaultValue("1m") @NotNull Duration period,
+       @DefaultValue("100000") @Positive long maxTrackedClients) {}
++
++  /**
++   * Click analytics: a bounded queue between the redirect and the database, and retention.
++   *
++   * @param queueCapacity clicks buffered before new ones are dropped (and counted)
++   * @param batchSize clicks written per insert
++   * @param retention how long clicks are kept; also the longest statistics window
++   */
++  public record Clicks(
++      @DefaultValue("10000") @Positive int queueCapacity,
++      @DefaultValue("500") @Positive int batchSize,
++      @DefaultValue("90d") @NotNull Duration retention) {}
+ }
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java b/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
+new file mode 100644
+index 0000000..be2070a
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
+@@ -0,0 +1,27 @@
++package io.github.marishasahay.shortener.link;
++
++import java.time.Instant;
++
++/**
++ * What the redirect cache holds for a code: the target and the expiry it was loaded with, so the
++ * expiry can be re-checked on every cache hit (issue #1).
++ *
++ * @param targetUrl where the code redirects to
++ * @param expiresAt expiry instant, or {@code null} if the link never expires
++ */
++public record CachedLink(String targetUrl, Instant expiresAt) {
++
++  static CachedLink of(Link link) {
++    return new CachedLink(link.targetUrl(), link.expiresAt());
++  }
++
++  /**
++   * Whether the cached link has expired at the given instant.
++   *
++   * @param now the instant to evaluate against
++   * @return {@code true} if an expiry is set and {@code now} is at or after it
++   */
++  public boolean isExpiredAt(Instant now) {
++    return expiresAt != null && !now.isBefore(expiresAt);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+index d8bdc9f..08815a6 100644
+--- a/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+@@ -6,12 +6,13 @@ import org.springframework.stereotype.Component;
+ 
+ /**
+  * Resolves short codes to target URLs on the redirect hot path, backed by a Caffeine cache of
+- * {@code code -> target URL} in front of the database.
++ * {@code code -> (target URL, expiry)} in front of the database. Expiry is checked on every
++ * lookup, including cache hits, so a cached link stops redirecting the moment it expires.
+  */
+ @Component
+ public class LinkResolver {
+ 
+-  private final Cache<String, String> redirectCache;
++  private final Cache<String, CachedLink> redirectCache;
+   private final LinkRepository repository;
+   private final Clock clock;
+ 
+@@ -22,7 +23,7 @@ public class LinkResolver {
+    * @param repository link persistence
+    * @param clock time source
+    */
+-  public LinkResolver(Cache<String, String> redirectCache, LinkRepository repository,
++  public LinkResolver(Cache<String, CachedLink> redirectCache, LinkRepository repository,
+       Clock clock) {
+     this.redirectCache = redirectCache;
+     this.repository = repository;
+@@ -35,10 +36,15 @@ public class LinkResolver {
+    * @param code the short code
+    * @return the target URL
+    * @throws LinkNotFoundException if no active link exists for the code
+-   * @throws LinkExpiredException if the link has expired
++   * @throws LinkExpiredException if the link has expired, whether or not it was cached
+    */
+   public String resolve(String code) {
+-    return redirectCache.get(code, this::load);
++    CachedLink link = redirectCache.get(code, this::load);
++    if (link.isExpiredAt(clock.instant())) {
++      redirectCache.invalidate(code);
++      throw new LinkExpiredException(code);
++    }
++    return link.targetUrl();
+   }
+ 
+   /**
+@@ -50,12 +56,12 @@ public class LinkResolver {
+     redirectCache.invalidate(code);
+   }
+ 
+-  private String load(String code) {
++  private CachedLink load(String code) {
+     Link link = repository.findActiveByCode(code)
+         .orElseThrow(() -> new LinkNotFoundException(code));
+     if (link.isExpiredAt(clock.instant())) {
+       throw new LinkExpiredException(code);
+     }
+-    return link.targetUrl();
++    return CachedLink.of(link);
+   }
+ }
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java b/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java
+index 75766f2..1c7164d 100644
+--- a/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java
++++ b/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java
+@@ -1,37 +1,48 @@
+ package io.github.marishasahay.shortener.link;
+ 
++import io.github.marishasahay.shortener.click.ClickRecorder;
+ import java.net.URI;
+ import org.springframework.http.CacheControl;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestHeader;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+ /**
+  * The public redirect endpoint. Uses {@code 302 Found} with {@code Cache-Control: no-store} so
+  * that browsers ask the service on every visit instead of caching the redirect permanently.
+  * The path pattern only matches valid codes, so it never shadows {@code /api/**} or
+- * {@code /actuator/**}.
++ * {@code /actuator/**}. Each successful redirect is offered to the {@link ClickRecorder}, which
++ * never blocks; failed lookups (404, 410) are not counted.
+  */
+ @RestController
+ public class RedirectController {
+ 
+   private final LinkResolver linkResolver;
++  private final ClickRecorder clickRecorder;
+ 
+-  public RedirectController(LinkResolver linkResolver) {
++  public RedirectController(LinkResolver linkResolver, ClickRecorder clickRecorder) {
+     this.linkResolver = linkResolver;
++    this.clickRecorder = clickRecorder;
+   }
+ 
+   /**
+    * Redirects to the target URL of a code.
+    *
+    * @param code the short code
++   * @param referer the {@code Referer} header; only its host is recorded
++   * @param userAgent the {@code User-Agent} header; only its family is recorded
+    * @return {@code 302 Found} with the target in the {@code Location} header
+    */
+   @GetMapping("/{code:[A-Za-z0-9_-]{4,32}}")
+-  public ResponseEntity<Void> redirect(@PathVariable String code) {
++  public ResponseEntity<Void> redirect(@PathVariable String code,
++      @RequestHeader(name = HttpHeaders.REFERER, required = false) String referer,
++      @RequestHeader(name = HttpHeaders.USER_AGENT, required = false) String userAgent) {
+     String targetUrl = linkResolver.resolve(code);
++    clickRecorder.record(code, referer, userAgent);
+     return ResponseEntity.status(HttpStatus.FOUND)
+         .location(URI.create(targetUrl))
+         .cacheControl(CacheControl.noStore())
+diff --git a/src/main/resources/application.yml b/src/main/resources/application.yml
+index fe263a4..f783c97 100644
+--- a/src/main/resources/application.yml
++++ b/src/main/resources/application.yml
+@@ -22,6 +22,12 @@ shortener:
+     period: 1m
+     max-tracked-clients: 100000
+   trust-forwarded-headers: false
++  clicks:
++    queue-capacity: 10000
++    batch-size: 500
++    retention: 90d
++    flush-interval: 1s
++    purge-interval: 1h
+ 
+ # Swagger UI at /swagger-ui.html, showing the hand-written contract instead of a spec generated
+ # from the code, so the UI and the API compatibility gate see the same document. The generated
+@@ -45,4 +51,4 @@ management:
+ info:
+   app:
+     name: url-shortener
+-    description: URL shortener service (v1 baseline)
++    description: URL shortener service
+diff --git a/src/main/resources/db/migration/V2__create_link_clicks.sql b/src/main/resources/db/migration/V2__create_link_clicks.sql
+new file mode 100644
+index 0000000..99bb106
+--- /dev/null
++++ b/src/main/resources/db/migration/V2__create_link_clicks.sql
+@@ -0,0 +1,17 @@
++-- One row per successful redirect, written in batches by the click recorder (best effort).
++-- Privacy: no IP address, no user-agent string, no referrer path or query; only the referrer
++-- host and a coarse agent family. Rows older than the retention period (90 days by default)
++-- are deleted by a scheduled purge. Clicks reference the code, which is never reused.
++create table link_clicks (
++    id             bigint generated always as identity primary key,
++    code           varchar(32)  not null,
++    clicked_at     timestamptz  not null,
++    referrer_host  varchar(255),
++    agent_family   varchar(16)  not null,
++    constraint ck_link_clicks_agent_family check (agent_family in ('BROWSER', 'BOT', 'OTHER'))
++);
++
++-- Statistics of one link over a time window.
++create index idx_link_clicks_code_clicked_at on link_clicks (code, clicked_at);
++-- Retention purge.
++create index idx_link_clicks_clicked_at on link_clicks (clicked_at);
+diff --git a/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java b/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java
+index 74e866e..72cd818 100644
+--- a/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java
++++ b/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java
+@@ -16,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+ 
++import io.github.marishasahay.shortener.click.ClickRepository;
+ import io.github.marishasahay.shortener.link.Link;
+ import io.github.marishasahay.shortener.link.LinkRepository;
+ import java.nio.file.Files;
+@@ -49,6 +50,9 @@ class ApplicationWiringTest {
+   @MockitoBean
+   private LinkRepository repository;
+ 
++  @MockitoBean
++  private ClickRepository clickRepository;
++
+   @Test
+   void shouldCreateLinkWithConfiguredCodeGenerator() throws Exception {
+     when(repository.insertIfAbsent(anyString(), eq(TARGET), any(), any()))
+diff --git a/src/test/java/io/github/marishasahay/shortener/ContractConformanceIT.java b/src/test/java/io/github/marishasahay/shortener/ContractConformanceIT.java
+new file mode 100644
+index 0000000..65646a8
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ContractConformanceIT.java
+@@ -0,0 +1,92 @@
++package io.github.marishasahay.shortener;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++
++import com.jayway.jsonpath.JsonPath;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.beans.factory.annotation.Qualifier;
++import org.springframework.test.web.servlet.MvcResult;
++import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
++import org.yaml.snakeyaml.Yaml;
++
++/**
++ * Links the running service to the published contract: every documented operation is served,
++ * every API route is documented, and real responses carry the properties the contract marks as
++ * required. Complements the orchestrator's structural compatibility gate, which compares
++ * contract versions but cannot see behaviour.
++ */
++class ContractConformanceIT extends IntegrationTestSupport {
++
++  private static final Set<String> METHODS = Set.of("get", "post", "put", "delete", "patch");
++
++  @Autowired
++  @Qualifier("requestMappingHandlerMapping")
++  private RequestMappingHandlerMapping mappings;
++
++  @SuppressWarnings("unchecked")
++  private static Map<String, Object> contract() throws IOException {
++    return new Yaml().load(Files.readString(Path.of("api", "openapi.yaml")));
++  }
++
++  @SuppressWarnings("unchecked")
++  private static List<String> required(String schema) throws IOException {
++    Map<String, Object> schemas = (Map<String, Object>) ((Map<String, Object>) contract()
++        .get("components")).get("schemas");
++    return (List<String>) ((Map<String, Object>) schemas.get(schema)).get("required");
++  }
++
++  @Test
++  @SuppressWarnings("unchecked")
++  void everyDocumentedOperationIsServedAndEveryApiRouteIsDocumented() throws Exception {
++    Set<String> documented = new HashSet<>();
++    ((Map<String, Map<String, Object>>) contract().get("paths")).forEach((path, item) ->
++        item.keySet().stream().filter(METHODS::contains)
++            .forEach(method -> documented.add(method.toUpperCase() + " " + path)));
++    Set<String> served = new HashSet<>();
++    mappings.getHandlerMethods().keySet().forEach(info -> info.getMethodsCondition().getMethods()
++        .forEach(method -> info.getPathPatternsCondition().getPatternValues()
++            .forEach(pattern -> served.add(method + " "
++                + pattern.replaceAll("\\{(\\w+):[^/]*}", "{$1}")))));
++
++    assertThat(served).containsAll(documented);
++    assertThat(served).filteredOn(op -> op.contains(" /api/")).isSubsetOf(documented);
++  }
++
++  @Test
++  void responsesCarryEveryPropertyTheContractRequires() throws Exception {
++    String alias = "k-" + UUID.randomUUID().toString().substring(0, 12);
++    MvcResult created = postLink("{\"url\": \"https://example.com/x\", \"customAlias\": \""
++        + alias + "\"}").andReturn();
++    MvcResult link = mockMvc.perform(get("/api/v1/links/" + alias)).andReturn();
++    MvcResult stats = mockMvc.perform(get("/api/v1/links/" + alias + "/stats")).andReturn();
++    MvcResult missing = mockMvc.perform(get("/api/v1/links/nope-" + alias)).andReturn();
++
++    assertThat(created.getResponse().getStatus()).isEqualTo(201);
++    assertRequired(created, "LinkResponse");
++    assertRequired(link, "LinkResponse");
++    assertRequired(stats, "LinkStats");
++    assertRequired(stats, "DailyClicks", "$.daily[0]");
++    assertThat(missing.getResponse().getContentType()).isEqualTo("application/problem+json");
++    assertRequired(missing, "ProblemDetail");
++  }
++
++  private static void assertRequired(MvcResult result, String schema) throws Exception {
++    assertRequired(result, schema, "$");
++  }
++
++  private static void assertRequired(MvcResult result, String schema, String path)
++      throws Exception {
++    Map<String, Object> body = JsonPath.read(result.getResponse().getContentAsString(), path);
++    assertThat(body).as(schema).containsKeys(required(schema).toArray(String[]::new));
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java b/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
+index 83589d3..4c81877 100644
+--- a/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
++++ b/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
+@@ -3,6 +3,7 @@ package io.github.marishasahay.shortener;
+ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+ 
+ import com.jayway.jsonpath.JsonPath;
++import io.github.marishasahay.shortener.click.ClickRecorder;
+ import io.github.marishasahay.shortener.support.MutableClock;
+ import java.time.Instant;
+ import java.util.concurrent.atomic.AtomicInteger;
+@@ -31,8 +32,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
+  * so all integration test classes share one container and one cached Spring context. Because
+  * state is shared, tests must not assume an empty table: they use unique aliases or generated
+  * codes, and each test gets its own client address so rate-limit buckets never interfere.
++ * Background click flushing is off: tests call {@link ClickRecorder#flush()} themselves.
+  */
+-@SpringBootTest
++@SpringBootTest(properties = "shortener.clicks.scheduling-enabled=false")
+ @AutoConfigureMockMvc
+ @Import(IntegrationTestSupport.TestClockConfiguration.class)
+ public abstract class IntegrationTestSupport {
+@@ -75,6 +77,9 @@ public abstract class IntegrationTestSupport {
+   @Autowired
+   protected MutableClock clock;
+ 
++  @Autowired
++  protected ClickRecorder clickRecorder;
++
+   protected String clientAddress;
+ 
+   @BeforeEach
+diff --git a/src/test/java/io/github/marishasahay/shortener/click/ClickAnalyticsIT.java b/src/test/java/io/github/marishasahay/shortener/click/ClickAnalyticsIT.java
+new file mode 100644
+index 0000000..71c5ef9
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/click/ClickAnalyticsIT.java
+@@ -0,0 +1,120 @@
++package io.github.marishasahay.shortener.click;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.IntegrationTestSupport;
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import java.time.Duration;
++import java.util.List;
++import java.util.Map;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.jdbc.core.simple.JdbcClient;
++import org.springframework.test.web.servlet.ResultActions;
++
++class ClickAnalyticsIT extends IntegrationTestSupport {
++
++  private static final String CHROME = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0 Safari/537";
++
++  @Autowired
++  private JdbcClient jdbc;
++
++  @Autowired
++  private ClickRepository clickRepository;
++
++  @Autowired
++  private ShortenerProperties properties;
++
++  private String createLink(String expiresAt) throws Exception {
++    String alias = "c-" + UUID.randomUUID().toString().substring(0, 12);
++    postLink("""
++        {"url": "https://example.com/campaign", "customAlias": "%s"%s}
++        """.formatted(alias, expiresAt == null ? "" : ", \"expiresAt\": \"" + expiresAt + "\""))
++        .andExpect(status().isCreated());
++    return alias;
++  }
++
++  private ResultActions follow(String code, String referer, String userAgent) throws Exception {
++    return mockMvc.perform(get("/" + code).header("Referer", referer)
++        .header("User-Agent", userAgent));
++  }
++
++  @Test
++  void reportsTotalsLastClickAndZeroFilledDailyCountsOfSuccessfulRedirects() throws Exception {
++    String code = createLink(null);
++    follow(code, "https://news.example.com/story?id=1", CHROME).andExpect(status().isFound());
++    follow(code, "https://news.example.com/other", CHROME).andExpect(status().isFound());
++    clock.advance(Duration.ofDays(2));
++    follow(code, "", "curl/8.4").andExpect(status().isFound());
++    clickRecorder.flush();
++
++    mockMvc.perform(get("/api/v1/links/" + code + "/stats").param("days", "3"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.code").value(code))
++        .andExpect(jsonPath("$.totalClicks").value(3))
++        .andExpect(jsonPath("$.lastClickAt").value("2026-01-03T00:00:00Z"))
++        .andExpect(jsonPath("$.from").value("2026-01-01"))
++        .andExpect(jsonPath("$.to").value("2026-01-03"))
++        .andExpect(jsonPath("$.daily[*].clicks").value(org.hamcrest.Matchers.contains(2, 0, 1)));
++    mockMvc.perform(get("/api/v1/links/" + code + "/stats"))
++        .andExpect(jsonPath("$.daily.length()").value(7));
++  }
++
++  @Test
++  void storesOnlyTheReferrerHostAndAnAgentFamilyNeverAnIpOrUserAgent() throws Exception {
++    String code = createLink(null);
++    follow(code, "https://mail.example.com/inbox?user=alice@example.com", CHROME);
++    clickRecorder.flush();
++
++    Map<String, Object> row = jdbc.sql("select * from link_clicks where code = :code")
++        .param("code", code).query().singleRow();
++    List<String> columns = jdbc.sql("""
++        select column_name from information_schema.columns
++         where table_name = 'link_clicks' order by ordinal_position
++        """).query(String.class).list();
++
++    assertThat(columns).containsExactly("id", "code", "clicked_at", "referrer_host",
++        "agent_family");
++    assertThat(row).containsEntry("referrer_host", "mail.example.com")
++        .containsEntry("agent_family", "BROWSER");
++  }
++
++  @Test
++  void failedRedirectsAreNotCountedAndTheStatisticsWindowIsValidated() throws Exception {
++    String expiring = createLink("2026-01-01T01:00:00Z");
++    clock.advance(Duration.ofHours(2));
++    follow(expiring, null, CHROME).andExpect(status().isGone());
++    follow("zz-unknown-" + UUID.randomUUID().toString().substring(0, 8), null, CHROME)
++        .andExpect(status().isNotFound());
++    clickRecorder.flush();
++
++    mockMvc.perform(get("/api/v1/links/" + expiring + "/stats"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.totalClicks").value(0))
++        .andExpect(jsonPath("$.lastClickAt").isEmpty());
++    mockMvc.perform(get("/api/v1/links/" + expiring + "/stats").param("days", "91"))
++        .andExpect(status().isBadRequest())
++        .andExpect(jsonPath("$.errors[0].field").value("days"));
++    mockMvc.perform(delete("/api/v1/links/" + expiring)).andExpect(status().isNoContent());
++    mockMvc.perform(get("/api/v1/links/" + expiring + "/stats"))
++        .andExpect(status().isNotFound());
++  }
++
++  @Test
++  void retentionDeletesClicksOlderThanTheRetentionPeriod() throws Exception {
++    String code = createLink(null);
++    follow(code, null, CHROME);
++    clock.advance(Duration.ofDays(91));
++    follow(code, null, CHROME);
++    clickRecorder.flush();
++
++    new ClickMaintenance(clickRecorder, clickRepository, properties, clock).purge();
++
++    assertThat(clickRepository.totals(code).total()).isEqualTo(1);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/click/ClickEventTest.java b/src/test/java/io/github/marishasahay/shortener/click/ClickEventTest.java
+new file mode 100644
+index 0000000..49796f0
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/click/ClickEventTest.java
+@@ -0,0 +1,52 @@
++package io.github.marishasahay.shortener.click;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.time.Instant;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++import org.junit.jupiter.params.provider.NullAndEmptySource;
++
++class ClickEventTest {
++
++  @ParameterizedTest(name = "{0} -> {1}")
++  @CsvSource(nullValues = "null", value = {
++      "https://News.Example.com/a/b?user=alice#x, news.example.com",
++      "http://example.com, example.com",
++      "android-app://com.example, null",
++      "ftp://example.com/file, null",
++      "not a url, null",
++      "/relative/path, null"})
++  void keepsOnlyTheReferrerHost(String referer, String host) {
++    assertThat(ClickEvent.referrerHost(referer)).isEqualTo(host);
++  }
++
++  @ParameterizedTest
++  @NullAndEmptySource
++  void noReferrerMeansNoHost(String referer) {
++    assertThat(ClickEvent.referrerHost(referer)).isNull();
++  }
++
++  @ParameterizedTest(name = "{0} -> {1}")
++  @CsvSource(nullValues = "null", value = {
++      "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15, BROWSER",
++      "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36 Edg/120.0, BROWSER",
++      "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html), BOT",
++      "curl/8.4.0, BOT",
++      "python-requests/2.31, BOT",
++      "MyCustomClient/1.0, OTHER",
++      "null, OTHER",
++      "'', OTHER"})
++  void reducesTheUserAgentToAFamily(String userAgent, AgentFamily family) {
++    assertThat(AgentFamily.of(userAgent)).isEqualTo(family);
++  }
++
++  @org.junit.jupiter.api.Test
++  void anEventCarriesNoRawHeaders() {
++    ClickEvent event = ClickEvent.of("abcd", Instant.EPOCH,
++        "https://mail.example.com/inbox?id=42", "Mozilla/5.0 Firefox/121.0");
++
++    assertThat(event).isEqualTo(new ClickEvent("abcd", Instant.EPOCH, "mail.example.com",
++        AgentFamily.BROWSER));
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/click/ClickRecorderTest.java b/src/test/java/io/github/marishasahay/shortener/click/ClickRecorderTest.java
+new file mode 100644
+index 0000000..efe54d4
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/click/ClickRecorderTest.java
+@@ -0,0 +1,91 @@
++package io.github.marishasahay.shortener.click;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.ArgumentMatchers.anyList;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.support.MutableClock;
++import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
++import java.net.URI;
++import java.time.Duration;
++import java.time.Instant;
++import java.util.ArrayList;
++import java.util.List;
++import org.junit.jupiter.api.Test;
++import org.mockito.ArgumentCaptor;
++
++class ClickRecorderTest {
++
++  private final ClickRepository repository = mock(ClickRepository.class);
++  private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
++  private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
++
++  private ClickRecorder recorder(int capacity, int batchSize) {
++    ShortenerProperties properties = new ShortenerProperties(URI.create("http://localhost:8080"),
++        7, new ShortenerProperties.RedirectCache(Duration.ofMinutes(10), 100),
++        new ShortenerProperties.RateLimit(20, Duration.ofMinutes(1), 100), false,
++        new ShortenerProperties.Clicks(capacity, batchSize, Duration.ofDays(90)));
++    return new ClickRecorder(properties, repository, clock, meters);
++  }
++
++  private double counter(String name) {
++    return meters.counter(name).count();
++  }
++
++  @Test
++  void aFullQueueDropsAndCountsClicksInsteadOfBlockingTheRedirect() {
++    ClickRecorder recorder = recorder(2, 10);
++
++    assertThat(recorder.record("abcd", null, null)).isTrue();
++    assertThat(recorder.record("abcd", null, null)).isTrue();
++    assertThat(recorder.record("abcd", null, null)).isFalse();
++
++    assertThat(recorder.queued()).isEqualTo(2);
++    assertThat(counter("shortener.clicks.dropped")).isEqualTo(1);
++    verify(repository, never()).insertBatch(anyList());
++  }
++
++  @Test
++  @SuppressWarnings("unchecked")
++  void flushWritesQueuedClicksInBatchesWithTheTimeOfTheRedirect() {
++    ClickRecorder recorder = recorder(100, 2);
++    List<List<ClickEvent>> batches = new ArrayList<>();
++    org.mockito.Mockito.doAnswer(call -> batches.add(List.copyOf(call.getArgument(0))))
++        .when(repository).insertBatch(anyList());
++    recorder.record("abcd", "https://t.co/xyz", "Mozilla/5.0 Chrome/120");
++    clock.advance(Duration.ofSeconds(5));
++    recorder.record("abcd", null, "curl/8");
++    recorder.record("efgh", null, null);
++
++    assertThat(recorder.flush()).isEqualTo(3);
++
++    assertThat(batches).extracting(List::size).containsExactly(2, 1);
++    assertThat(batches.getFirst()).containsExactly(
++        new ClickEvent("abcd", Instant.parse("2026-01-01T00:00:00Z"), "t.co",
++            AgentFamily.BROWSER),
++        new ClickEvent("abcd", Instant.parse("2026-01-01T00:00:05Z"), null, AgentFamily.BOT));
++    assertThat(counter("shortener.clicks.recorded")).isEqualTo(3);
++    assertThat(recorder.flush()).isZero();
++  }
++
++  @Test
++  void aFailedBatchIsCountedAsLostAndLaterBatchesStillFlush() {
++    ClickRecorder recorder = recorder(100, 1);
++    doThrow(new IllegalStateException("database down")).doNothing()
++        .when(repository).insertBatch(anyList());
++    recorder.record("abcd", null, null);
++    recorder.record("efgh", null, null);
++
++    assertThat(recorder.flush()).isEqualTo(1);
++
++    assertThat(counter("shortener.clicks.failed")).isEqualTo(1);
++    assertThat(counter("shortener.clicks.recorded")).isEqualTo(1);
++    ArgumentCaptor<List<ClickEvent>> captor = ArgumentCaptor.captor();
++    verify(repository, org.mockito.Mockito.times(2)).insertBatch(captor.capture());
++    recorder.flushOnShutdown();
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/click/LinkStatsServiceTest.java b/src/test/java/io/github/marishasahay/shortener/click/LinkStatsServiceTest.java
+new file mode 100644
+index 0000000..cf10033
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/click/LinkStatsServiceTest.java
+@@ -0,0 +1,74 @@
++package io.github.marishasahay.shortener.click;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.link.InvalidLinkRequestException;
++import io.github.marishasahay.shortener.link.Link;
++import io.github.marishasahay.shortener.link.LinkNotFoundException;
++import io.github.marishasahay.shortener.link.LinkRepository;
++import io.github.marishasahay.shortener.support.MutableClock;
++import java.net.URI;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.LocalDate;
++import java.util.Map;
++import java.util.Optional;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class LinkStatsServiceTest {
++
++  private static final Instant NOW = Instant.parse("2026-01-07T15:00:00Z");
++
++  private final LinkRepository links = mock(LinkRepository.class);
++  private final ClickRepository clicks = mock(ClickRepository.class);
++  private final LinkStatsService service = new LinkStatsService(links, clicks,
++      new ShortenerProperties(URI.create("http://localhost:8080"), 7,
++          new ShortenerProperties.RedirectCache(Duration.ofMinutes(10), 100),
++          new ShortenerProperties.RateLimit(20, Duration.ofMinutes(1), 100), false,
++          new ShortenerProperties.Clicks(100, 10, Duration.ofDays(90))),
++      new MutableClock(NOW));
++
++  @Test
++  void buildsAZeroFilledWindowOfWholeUtcDaysEndingToday() {
++    when(links.findActiveByCode("abcd")).thenReturn(Optional.of(
++        new Link(1, "abcd", "https://example.com", NOW.minus(Duration.ofDays(30)), null)));
++    when(clicks.dailyCounts("abcd", Instant.parse("2026-01-05T00:00:00Z"))).thenReturn(Map.of(
++        LocalDate.parse("2026-01-05"), 2L, LocalDate.parse("2026-01-07"), 3L));
++    when(clicks.totals("abcd")).thenReturn(new ClickRepository.Totals(9,
++        Instant.parse("2026-01-07T14:59:00Z")));
++
++    LinkStats stats = service.stats("abcd", 3);
++
++    assertThat(stats.from()).isEqualTo(LocalDate.parse("2026-01-05"));
++    assertThat(stats.to()).isEqualTo(LocalDate.parse("2026-01-07"));
++    assertThat(stats.daily()).extracting(LinkStats.DailyClicks::clicks).containsExactly(2L, 0L,
++        3L);
++    assertThat(stats.totalClicks()).isEqualTo(9);
++    assertThat(stats.lastClickAt()).isEqualTo(Instant.parse("2026-01-07T14:59:00Z"));
++  }
++
++  @ParameterizedTest
++  @ValueSource(ints = {0, -1, 91})
++  void rejectsWindowsOutsideTheRetentionPeriodBeforeQuerying(int days) {
++    assertThatThrownBy(() -> service.stats("abcd", days))
++        .isInstanceOf(InvalidLinkRequestException.class)
++        .hasMessage("days must be between 1 and 90");
++    verifyNoInteractions(links, clicks);
++  }
++
++  @Test
++  void unknownOrDeletedLinksHaveNoStatistics() {
++    when(links.findActiveByCode("gone")).thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> service.stats("gone", 7))
++        .isInstanceOf(LinkNotFoundException.class);
++    verifyNoInteractions(clicks);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/CachedLinkExpiryIT.java b/src/test/java/io/github/marishasahay/shortener/link/CachedLinkExpiryIT.java
+new file mode 100644
+index 0000000..9b76a6d
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/CachedLinkExpiryIT.java
+@@ -0,0 +1,44 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.IntegrationTestSupport;
++import java.time.Duration;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++
++/** Issue #1 end to end: the cache must never extend a link's life. */
++class CachedLinkExpiryIT extends IntegrationTestSupport {
++
++  private String create(String expiry) throws Exception {
++    String alias = "e-" + UUID.randomUUID().toString().substring(0, 12);
++    postLink("{\"url\": \"https://example.com/sale\", \"customAlias\": \"" + alias + "\""
++        + (expiry == null ? "" : ", \"expiresAt\": \"" + expiry + "\"") + "}")
++        .andExpect(status().isCreated());
++    return alias;
++  }
++
++  @Test
++  void aCachedLinkStopsRedirectingTheMomentItExpires() throws Exception {
++    String code = create("2026-01-01T01:00:00Z");
++    mockMvc.perform(get("/" + code)).andExpect(status().isFound());
++    clock.advance(Duration.ofMinutes(59));
++    mockMvc.perform(get("/" + code)).andExpect(status().isFound());
++
++    clock.advance(Duration.ofMinutes(1));
++
++    mockMvc.perform(get("/" + code)).andExpect(status().isGone());
++  }
++
++  @Test
++  void aDeletedCachedLinkStopsRedirectingImmediately() throws Exception {
++    String code = create(null);
++    mockMvc.perform(get("/" + code)).andExpect(status().isFound());
++
++    mockMvc.perform(delete("/api/v1/links/" + code)).andExpect(status().isNoContent());
++
++    mockMvc.perform(get("/" + code)).andExpect(status().isNotFound());
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+index 3f28c0c..bfdd7f0 100644
+--- a/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+@@ -69,7 +69,31 @@ class LinkResolverTest {
+   }
+ 
+   @Test
+-  void shouldReloadFromRepositoryAfterEviction() {
++  void shouldReturnGoneWhenACachedLinkExpiresIssue1() {
++    when(repository.findActiveByCode("abcdefg"))
++        .thenReturn(Optional.of(link(NOW.plusSeconds(60))));
++    assertThat(resolver.resolve("abcdefg")).isEqualTo(TARGET);
++
++    clock.setInstant(NOW.plusSeconds(60));
++
++    assertThatThrownBy(() -> resolver.resolve("abcdefg"))
++        .isInstanceOf(LinkExpiredException.class);
++    verify(repository, times(1)).findActiveByCode("abcdefg");
++  }
++
++  @Test
++  void shouldKeepServingACachedLinkUntilItsExpiry() {
++    when(repository.findActiveByCode("abcdefg"))
++        .thenReturn(Optional.of(link(NOW.plusSeconds(60))));
++    resolver.resolve("abcdefg");
++
++    clock.setInstant(NOW.plusSeconds(59));
++
++    assertThat(resolver.resolve("abcdefg")).isEqualTo(TARGET);
++  }
++
++  @Test
++  void shouldStopServingADeletedLinkImmediatelyEvenWhenCached() {
+     when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(null)));
+     resolver.resolve("abcdefg");
+ 
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java
+index b45820b..72eaf72 100644
+--- a/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java
+@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+ 
++import io.github.marishasahay.shortener.click.ClickRecorder;
+ import io.github.marishasahay.shortener.config.ShortenerProperties;
+ import io.github.marishasahay.shortener.ratelimit.RateLimitDecision;
+ import io.github.marishasahay.shortener.ratelimit.RateLimiter;
+@@ -54,6 +55,9 @@ class LinkWebLayerTest {
+   @MockitoBean
+   private RateLimiter rateLimiter;
+ 
++  @MockitoBean
++  private ClickRecorder clickRecorder;
++
+   @BeforeEach
+   void allowAllRequests() {
+     when(rateLimiter.tryAcquire(anyString()))

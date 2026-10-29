@@ -1,0 +1,9 @@
+{
+  "treeSha" : "51f75fa0757b5eeb5803a9ce24adfae3c30e8b79",
+  "revision" : "0362f8683274541909e47b171716ad9ee2b70711",
+  "verificationProfile" : "FULL",
+  "checks" : [ "maven-verify", "security-scan", "final-api-compatibility", "final-docs-coverage" ],
+  "skippedChecks" : [ ],
+  "sandbox" : "host process; environment reduced to [DOCKER_CERT_PATH, DOCKER_CONTEXT, DOCKER_HOST, DOCKER_TLS_VERIFY, HOME, JAVA_HOME, LANG, LC_ALL, LC_CTYPE, LOGNAME, M2_HOME, MAVEN_HOME, MAVEN_OPTS, PATH, SHELL, TMPDIR, TZ, USER] and [TESTCONTAINERS_]*; NOT isolated: filesystem, network and resources are the host's",
+  "staleEvidence" : [ ]
+}

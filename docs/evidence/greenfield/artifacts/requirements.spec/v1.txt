@@ -1,0 +1,64 @@
+{
+  "title" : "URL shortener service for customer communications",
+  "problemStatement" : "Customer messages need short, safe links that redirect to long URLs, can expire or be deleted, and cannot easily be abused for phishing.",
+  "goals" : [ "Short links that redirect reliably", "Safe to expose on the public internet", "A published, machine-readable contract" ],
+  "functionalRequirements" : [ {
+    "id" : "FR-1",
+    "description" : "Create a short link for an absolute http(s) URL, with an optional custom alias and an optional expiry in the future.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given a valid URL, when POST /api/v1/links, then 201 with code and shortUrl", "Given a taken alias, when creating it again, then 409", "Given an expiry in the past, then 400 naming expiresAt" ]
+  }, {
+    "id" : "FR-2",
+    "description" : "GET /{code} redirects to the target URL; expired links return 410, unknown or deleted links 404.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Given an active link, then 302 with Location and Cache-Control: no-store", "Given an expired link, then 410", "Given a deleted link, then 404" ]
+  }, {
+    "id" : "FR-3",
+    "description" : "Read a link's metadata and delete a link; codes are never reused.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "GET /api/v1/links/{code} returns 200 with the link", "DELETE returns 204 and the code then returns 404 and cannot be re-created" ]
+  }, {
+    "id" : "FR-4",
+    "description" : "Reject phishing tricks: user info in the URL, redirect loops to the shortener itself, non-http schemes, reserved aliases.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "https://bank.com@evil.com is rejected with 400", "A URL on the shortener's own host is rejected with 400" ]
+  }, {
+    "id" : "FR-5",
+    "description" : "Rate-limit link creation per client.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "More than the configured creations per period return 429 with Retry-After" ]
+  }, {
+    "id" : "FR-6",
+    "description" : "Every error is an RFC 9457 problem document; the API has an OpenAPI 3 contract.",
+    "priority" : "MUST",
+    "acceptanceCriteria" : [ "Validation errors list the invalid fields", "api/openapi.yaml documents every operation" ]
+  } ],
+  "nonFunctionalRequirements" : [ {
+    "id" : "NFR-1",
+    "category" : "security",
+    "description" : "Codes are not enumerable.",
+    "measure" : "Codes are 7 random base62 characters from SecureRandom (unit test)"
+  }, {
+    "id" : "NFR-2",
+    "category" : "reliability",
+    "description" : "Data lives in PostgreSQL with versioned migrations.",
+    "measure" : "Flyway migration applied by the Testcontainers integration tests"
+  }, {
+    "id" : "NFR-3",
+    "category" : "quality",
+    "description" : "Production-quality build.",
+    "measure" : "Checkstyle passes and line coverage >= 80% in mvn verify"
+  } ],
+  "ambiguities" : [ ],
+  "assumptions" : [ "302 rather than 301 so expiry, deletion and future analytics keep working", "Deletion is a soft delete so codes are never reused", "No authentication in this iteration; the management API sits behind a trusted gateway" ],
+  "outOfScope" : [ "Click analytics", "User accounts and link ownership" ],
+  "risks" : [ {
+    "description" : "Abuse for phishing",
+    "impact" : "brand damage",
+    "mitigation" : "URL policy and rate limiting"
+  }, {
+    "description" : "Per-instance rate limits",
+    "impact" : "N instances allow N x the limit",
+    "mitigation" : "documented; shared store when scaled out"
+  } ]
+}

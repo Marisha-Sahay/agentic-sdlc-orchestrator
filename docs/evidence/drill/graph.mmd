@@ -23,14 +23,15 @@ flowchart LR
   integrate --> tests
   docs["docs<br/><small>documentation</small>"]:::recovered
   integrate --> docs
-  security_review["security-review<br/><small>security review</small>"]:::succeeded
-  integrate --> security_review
   verify["verify<br/><small>verification</small>"]:::succeeded
   tests --> verify
-  docs --> verify
-  security_review --> verify
+  security_review["security-review<br/><small>security review</small>"]:::succeeded
+  verify --> security_review
+  final_validation["final-validation<br/><small>verification</small>"]:::succeeded
+  security_review --> final_validation
+  docs --> final_validation
   release["release<br/><small>release readiness</small>"]:::succeeded
-  verify --> release
+  final_validation --> release
   classDef succeeded fill:#d6f5e3,stroke:#1a7f4b,color:#0b3d22
   classDef recovered fill:#d6f5e3,stroke:#d08700,stroke-width:3px,color:#0b3d22
   classDef failed fill:#fde0dc,stroke:#c0362c,color:#5c120c

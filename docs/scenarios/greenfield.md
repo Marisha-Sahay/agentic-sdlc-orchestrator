@@ -1,39 +1,58 @@
 # Scenario: greenfield (build the service from a requirement)
 
 ```bash
-./agentic run greenfield --llm record --approvals interactive
-./agentic run greenfield
+./agentic run greenfield --approvals scripted        # or --approvals interactive
 ```
 
-## Requirement ([scenarios/greenfield.yaml](../../scenarios/greenfield.yaml))
-A URL shortener for customer communications: create short links (optional alias and expiry),
-redirect, look up and delete links; safe on the public internet (input validation, phishing
-tricks such as credentials-in-URL and redirect loops, rate-limited creation); consistent
-machine-readable errors; an OpenAPI contract and docs; PostgreSQL.
+## Input
+[scenarios/greenfield.yaml](../../scenarios/greenfield.yaml): a URL shortener for customer
+communications (create with optional alias and expiry, redirect, read, delete, safe on the public
+internet, rate-limited creation, consistent errors, OpenAPI contract, PostgreSQL). Starting point:
+[`scenarios/scaffolds/greenfield`](../../scenarios/scaffolds/greenfield), an empty Spring Boot 4
+project with the build gates and an integration-test base class.
 
-## Starting point
-[`scenarios/scaffolds/greenfield`](../../scenarios/scaffolds/greenfield): an empty Spring Boot 4
-project with the build (Checkstyle, JaCoCo 80% gate, Testcontainers), `application.yml`, the
-application class and an integration-test base class. No domain code, no API contract.
+## Normalized requirements
+6 functional requirements with acceptance criteria and 3 measurable NFRs
+([requirements.spec](../evidence/greenfield/artifacts/requirements.spec/v1.txt)).
 
-## What it demonstrates
-- **Requirement → design from nothing:** the architect writes the first OpenAPI contract (no
-  baseline, so `api-compatibility` validates the document only) and ADR-style decisions; human
-  design sign-off.
-- **Decomposition depth:** the planner splits the service into ordered tasks (schema and
-  repository before service, service before controllers); independent ones run in parallel.
-- **Build-up under gates:** every task must compile against the tasks before it; the test author
-  must make unit tests pass; `verify` enforces integration tests on PostgreSQL and the coverage
-  gate, with bounded self-repair.
-- **Compare with the hand-reviewed baseline:** the run's output can be diffed against
-  [`url-shortener`](../../url-shortener) (built with AI assistance and human review) to judge
-  output quality.
+## Decomposition (from the plan)
 
-## Decomposition
-The same template as brownfield without `codebase-scan` and `impact-analysis`:
-`intake → requirements → design 👤 → plan ⇒ impl-* → integrate → {tests, docs, security-review}
-→ verify → release 👤`.
+```mermaid
+flowchart LR
+  configuration --> link-rules
+  persistence --> link-service
+  link-rules --> link-service
+  configuration --> rate-limiting
+  link-service --> web-api
+  rate-limiting --> web-api
+```
 
-## Results
+`configuration` and `persistence` run in parallel, then `link-rules` and `rate-limiting`; every
+task must compile against the ones before it. Then `tests` → `verify` → `security-review`, with
+`docs` in parallel, → `final-validation` → `release`.
 
-*Pending the live recording (needs `GEMINI_API_KEY` / `AGENTIC_MODEL`).*
+## Decisions and approvals
+
+| Node | Kind | Reasons | Decision (scripted demonstration) |
+|---|---|---|---|
+| design | acceptance | sign-off, api-contract-change | approved |
+| impl-persistence | acceptance | schema-migration (V1) | approved |
+| impl-web-api | **authorization**, before the build file was written or built | dependency-change (`pom.xml`: springdoc UI) | authorized |
+| tests | acceptance | change-size (1,507 lines) | approved |
+| release | acceptance on tree `8451d0db90c7` | sign-off | approved |
+
+## Results ([evidence](../evidence/greenfield))
+
+17 nodes succeeded, 17 attempts, no retries, 5 checkpoints decided, 13 fixture model calls, 122
+hash-chained events, about 40 s. Final validation re-ran `mvn verify` (126 unit + 16
+Testcontainers ITs, Checkstyle, 80% coverage), the security scan, the contract check and docs
+coverage on tree `8451d0db90c7`; release was accepted on that tree.
+
+Output: [release.patch](../evidence/greenfield/release.patch). Applied to the scaffold it is
+byte-identical to [`url-shortener/`](../../url-shortener) (the only difference is the scaffold's
+empty `.gitkeep`).
+
+## Limits
+Hand-authored replies: shows decomposition, gating and approvals on a real build, not model
+quality. Because the fixture plan is correct, this run shows no recovery; the
+[drill](drill.md) covers failures.

@@ -1,10 +1,10 @@
 diff --git a/README.md b/README.md
-index e561e16..b953b39 100644
+index e9a01de..2ab9a84 100644
 --- a/README.md
 +++ b/README.md
-@@ -131,3 +131,16 @@ src/main/java/io/github/marishasahay/shortener/
+@@ -161,3 +161,16 @@ src/main/java/io/github/marishasahay/shortener/
  src/main/resources/db/migration/V1__create_links.sql
- api/openapi.yaml
+ api/openapi.yaml    the API contract; also what Swagger UI shows
  ```
 +
 +<!-- api-reference:start -->

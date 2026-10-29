@@ -1,0 +1,12 @@
+{
+  "key": "security-review/e1/attempt-1/primary/security-reviewer",
+  "agent": "security-reviewer",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"summary\": \"No raw personal data is stored; recording cannot block or fail redirects; statistics reuse the existing problem responses.\", \"findings\": [{\"severity\": \"MEDIUM\", \"source\": \"reviewer\", \"category\": \"access-control\", \"location\": \"LinkStatsController\", \"description\": \"Statistics are unauthenticated, like the rest of the management API\", \"recommendation\": \"Protect /api/** at the gateway\"}, {\"severity\": \"LOW\", \"source\": \"reviewer\", \"category\": \"privacy\", \"location\": \"ClickEvent\", \"description\": \"A referrer host can still identify a small private site\", \"recommendation\": \"Acceptable for campaign analytics; revisit if referrers become sensitive\"}]}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-29T00:00:00Z",
+  "error": null
+}

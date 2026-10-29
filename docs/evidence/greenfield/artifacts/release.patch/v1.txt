@@ -1,0 +1,4094 @@
+diff --git a/API.md b/API.md
+new file mode 100644
+index 0000000..9e8dd8e
+--- /dev/null
++++ b/API.md
+@@ -0,0 +1,396 @@
++# URL Shortener API
++
++A plain-English guide to the API: what each endpoint does, what to send, and every response you
++can get back. The examples were captured from the running service, except the two `500`
++responses, which can't be triggered on demand and are shown as the code produces them.
++
++- **Base URL:** `http://localhost:8080` when you run it locally.
++- **Format:** JSON in, JSON out. Send `Content-Type: application/json` when you post a body.
++- **Errors:** every error has the same shape; see [Errors](#errors).
++- **Try it:** start the service and open <http://localhost:8080/swagger-ui.html>.
++- **Formal contract:** [`api/openapi.yaml`](api/openapi.yaml) is the machine-readable version of
++  this guide. If the two ever disagree, the contract wins.
++
++## Endpoints at a glance
++
++| Endpoint | What it does | Success | Errors you might see |
++|---|---|---|---|
++| `POST /api/v1/links` | Create a short link | `201` | `400`, `409`, `415`, `429`, `500` |
++| `GET /api/v1/links/{code}` | Look up a link | `200` | `404` |
++| `DELETE /api/v1/links/{code}` | Delete a link | `204` | `404` |
++| `GET /{code}` | Follow a short link | `302` | `404`, `410` |
++
++On top of these, a wrong HTTP method gets `405`, an `Accept` header that rules out JSON gets
++`406`, and an unexpected failure gets `500`; see
++[Responses any endpoint can give](#responses-any-endpoint-can-give). The operational endpoints
++(`/actuator/health`, `/actuator/info`, `/actuator/metrics`) are for operators and are not covered
++here.
++
++## Errors
++
++When something goes wrong you get a problem document
++([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) with
++`Content-Type: application/problem+json`:
++
++```json
++{
++  "detail": "No link exists for code 'nope1234'",
++  "instance": "/nope1234",
++  "status": 404,
++  "title": "Link not found"
++}
++```
++
++- `title` is a short summary that doesn't change between requests, so code can match on it.
++- `detail` explains this particular failure.
++- `status` repeats the HTTP status, and `instance` is the path you called.
++- `errors` appears only on `400 Invalid request` and lists each field that was wrong.
++
++---
++
++## 1. Create a short link
++
++`POST /api/v1/links`
++
++| Field | Required | What it is |
++|---|---|---|
++| `url` | yes | The long URL. Must be an absolute `http` or `https` URL of at most 2048 characters. Spaces around it are trimmed. |
++| `customAlias` | no | Your own code instead of a random one: 4 to 32 letters, digits, `_` or `-`. |
++| `expiresAt` | no | When the link stops working, as a future ISO-8601 time such as `2026-12-31T23:59:59Z`. Leave it out and the link never expires. |
++
++Without `customAlias` you get a random 7-character code such as `caMHkPU`. Codes are
++case-sensitive.
++
++```bash
++curl -i -X POST http://localhost:8080/api/v1/links \
++  -H 'Content-Type: application/json' \
++  -d '{"url": "https://example.com/some/long/path"}'
++```
++
++### 201 Created
++
++The link is ready. The `Location` header points at the link's details
++(`Location: http://localhost:8080/api/v1/links/caMHkPU`), and `shortUrl` is the link to share.
++
++```json
++{
++  "code": "caMHkPU",
++  "shortUrl": "http://localhost:8080/caMHkPU",
++  "targetUrl": "https://example.com/some/long/path",
++  "createdAt": "2026-10-29T04:53:05.128029Z",
++  "expiresAt": null
++}
++```
++
++With your own alias and an expiry:
++
++```json
++{
++  "url": "https://example.com/launch",
++  "customAlias": "launch-2026",
++  "expiresAt": "2026-12-31T23:59:59Z"
++}
++```
++
++Response `201`, `Location: http://localhost:8080/api/v1/links/launch-2026`:
++
++```json
++{
++  "code": "launch-2026",
++  "shortUrl": "http://localhost:8080/launch-2026",
++  "targetUrl": "https://example.com/launch",
++  "createdAt": "2026-10-29T04:53:05.188742Z",
++  "expiresAt": "2026-12-31T23:59:59Z"
++}
++```
++
++All times are UTC. `expiresAt` is `null` for a link that never expires.
++
++### 400 Bad Request: the request breaks a rule
++
++The title is `Invalid request` and `errors` says which field is wrong and why:
++
++```json
++{
++  "detail": "url must not contain user info",
++  "instance": "/api/v1/links",
++  "status": 400,
++  "title": "Invalid request",
++  "errors": [
++    {
++      "field": "url",
++      "message": "must not contain user info"
++    }
++  ]
++}
++```
++
++Every reason you can get:
++
++| You sent | `field` | `message` |
++|---|---|---|
++| No `url`, or only spaces | `url` | `must not be blank` |
++| A URL that isn't absolute `http`/`https`, e.g. `ftp://example.com/file` or `/just/a/path` | `url` | `must be an absolute http or https URL` |
++| A URL with user info, e.g. `https://bank.com@evil.com` (it really goes to `evil.com`) | `url` | `must not contain user info` |
++| A URL that points back at the shortener itself | `url` | `must not point at this shortener` |
++| A URL longer than 2048 characters | `url` | `must be at most 2048 characters` |
++| An alias that is too short, too long, or has other characters | `customAlias` | `must be 4-32 characters of letters, digits, '_' or '-'` |
++| A reserved alias (list below) | `customAlias` | `is a reserved word` |
++| An `expiresAt` in the past | `expiresAt` | `must be in the future` |
++
++For a missing or blank `url` the `detail` is `Request validation failed`; for the others it is the
++field and message together, as in the example above.
++
++Reserved aliases, in any letter case: `api`, `actuator`, `health`, `admin`, `static`, `assets`,
++`public`, `login`, `logout`, `error`, `favicon`, `robots`, `metrics`, `info`, `docs`, `swagger`,
++`openapi`, `www`. They would clash with the service's own pages.
++
++**Broken JSON or a value of the wrong type.** If the body isn't valid JSON, or a value can't be
++read (for example `"expiresAt": "tomorrow"`), you get a plainer 400 with no `errors` list:
++
++```json
++{
++  "detail": "Failed to read request",
++  "instance": "/api/v1/links",
++  "status": 400,
++  "title": "Bad Request"
++}
++```
++
++### 409 Conflict: the alias is taken
++
++That alias is already in use. This includes deleted links: a code is never handed out twice, so a
++deleted link's alias stays taken.
++
++```json
++{
++  "detail": "The alias 'launch-2026' is already in use",
++  "instance": "/api/v1/links",
++  "status": 409,
++  "title": "Alias already in use"
++}
++```
++
++### 415 Unsupported Media Type
++
++The body wasn't sent as JSON (the `Content-Type` header is missing or wrong).
++
++```json
++{
++  "detail": "Content-Type 'text/plain' is not supported.",
++  "instance": "/api/v1/links",
++  "status": 415,
++  "title": "Unsupported Media Type"
++}
++```
++
++### 429 Too Many Requests
++
++Each client (by IP address) can create 20 links a minute. The allowance refills gradually, about
++one request every 3 seconds, and the `Retry-After` header says how many seconds to wait
++(`Retry-After: 3`). Only creating links is limited; following and looking up links are not.
++
++```json
++{
++  "detail": "Rate limit exceeded; retry after 3 seconds",
++  "instance": "/api/v1/links",
++  "status": 429,
++  "title": "Too many requests"
++}
++```
++
++### 500 Internal Server Error
++
++Rare. One case is specific to this endpoint: the service tried 5 random codes and every one was
++already taken. With about 3.5 trillion possible codes this practically never happens, but if it
++does, simply try again.
++
++```json
++{
++  "detail": "Could not generate a unique short code after 5 attempts",
++  "instance": "/api/v1/links",
++  "status": 500,
++  "title": "Short code generation failed"
++}
++```
++
++Any other failure is the general 500 described under
++[Responses any endpoint can give](#responses-any-endpoint-can-give).
++
++---
++
++## 2. Look up a link
++
++`GET /api/v1/links/{code}`
++
++```bash
++curl -i http://localhost:8080/api/v1/links/launch-2026
++```
++
++### 200 OK
++
++```json
++{
++  "code": "launch-2026",
++  "shortUrl": "http://localhost:8080/launch-2026",
++  "targetUrl": "https://example.com/launch",
++  "createdAt": "2026-10-29T04:53:05.188742Z",
++  "expiresAt": "2026-12-31T23:59:59Z"
++}
++```
++
++Expired links are still returned here, so you can see when they expired. Only following them
++fails.
++
++### 404 Not Found
++
++The link never existed or was deleted.
++
++```json
++{
++  "detail": "No link exists for code 'nope1234'",
++  "instance": "/api/v1/links/nope1234",
++  "status": 404,
++  "title": "Link not found"
++}
++```
++
++---
++
++## 3. Delete a link
++
++`DELETE /api/v1/links/{code}`
++
++```bash
++curl -i -X DELETE http://localhost:8080/api/v1/links/old-page
++```
++
++### 204 No Content
++
++Deleted, with an empty body. The link stops working at once, and its code is never reused.
++
++### 404 Not Found
++
++There is no such link, or it was already deleted (deleting twice gives `404` the second time).
++
++```json
++{
++  "detail": "No link exists for code 'old-page'",
++  "instance": "/api/v1/links/old-page",
++  "status": 404,
++  "title": "Link not found"
++}
++```
++
++---
++
++## 4. Follow a short link
++
++`GET /{code}`. This is the link you share, for example `http://localhost:8080/launch-2026`.
++
++```bash
++curl -i http://localhost:8080/launch-2026
++```
++
++### 302 Found
++
++No body; the browser goes straight to the address in `Location`:
++
++```text
++Location: https://example.com/launch
++Cache-Control: no-store
++```
++
++Why 302 and not 301: browsers keep a 301 forever and stop asking the service, so deleting or
++expiring the link would have no effect. `Cache-Control: no-store` makes sure every visit checks in.
++
++Swagger UI can't show this response. The browser follows the redirect by itself and usually
++reports "Failed to fetch" because the target site blocks cross-site requests. Open the short link
++in a new tab, or use `curl -i`, instead.
++
++### 404 Not Found
++
++The link never existed or was deleted.
++
++```json
++{
++  "detail": "No link exists for code 'nope1234'",
++  "instance": "/nope1234",
++  "status": 404,
++  "title": "Link not found"
++}
++```
++
++A path that can't be a code at all (shorter than 4 or longer than 32 characters, or containing
++other characters such as `.`) also gets a 404, with the generic title `Not Found`:
++
++```json
++{
++  "detail": "No static resource abc.",
++  "instance": "/abc",
++  "status": 404,
++  "title": "Not Found"
++}
++```
++
++### 410 Gone
++
++The link has expired.
++
++```json
++{
++  "detail": "The link for code 'flash-sale' has expired",
++  "instance": "/flash-sale",
++  "status": 410,
++  "title": "Link expired"
++}
++```
++
++> **Known issue #1:** a link that was followed before it expired can keep redirecting for up to
++> 10 minutes after `expiresAt`, because the redirect cache doesn't re-check the expiry. The
++> [brownfield scenario](../docs/scenarios/brownfield.md) fixes this.
++
++---
++
++## Responses any endpoint can give
++
++### 405 Method Not Allowed
++
++The path exists but not with that method, for example `PUT /api/v1/links/launch-2026`. The
++`Allow` header lists the methods that work (`Allow: GET, DELETE`).
++
++```json
++{
++  "detail": "Method 'PUT' is not supported.",
++  "instance": "/api/v1/links/launch-2026",
++  "status": 405,
++  "title": "Method Not Allowed"
++}
++```
++
++### 406 Not Acceptable
++
++You asked an endpoint that returns JSON (creating or looking up a link) for something else, for
++example with `Accept: text/plain`.
++
++```json
++{
++  "detail": "Acceptable representations: [application/json].",
++  "instance": "/api/v1/links/launch-2026",
++  "status": 406,
++  "title": "Not Acceptable"
++}
++```
++
++### 500 Internal Server Error
++
++Something unexpected broke. The details go to the server log, never into the response.
++
++```json
++{
++  "detail": "An unexpected error occurred",
++  "instance": "/api/v1/links",
++  "status": 500,
++  "title": "Internal server error"
++}
++```
+diff --git a/README.md b/README.md
+index c6cb8af..e9a01de 100644
+--- a/README.md
++++ b/README.md
+@@ -1,13 +1,163 @@
+ # URL Shortener
+ 
+-Spring Boot 4 / Java 21 service on PostgreSQL. This README is a scaffold; the orchestrator's
+-documentation stage fills it in.
++A small URL shortener service (v1 baseline): create short links, redirect short codes, read link
++metadata, and delete links. Spring Boot 4.1, Java 21, PostgreSQL (Flyway, `JdbcClient`),
++Caffeine, Actuator. The API contract is in [`api/openapi.yaml`](api/openapi.yaml); a plain-English
++guide with sample requests and every possible response is in [`API.md`](API.md).
+ 
+-## Run locally
++## Running locally
++
++Prerequisites: Java 21 (check with `mvn -v`; if Maven picks another JDK, set `JAVA_HOME` to a
++Java 21 installation), Maven 3.9+, Docker.
++
++```bash
++docker compose up -d      # PostgreSQL 17 on localhost:5432 (db/user/password: shortener)
++mvn spring-boot:run       # applies Flyway migrations and starts on http://localhost:8080
++```
++
++Stop the database with `docker compose down` (add `-v` to drop the data volume).
++
++## Try it in the browser (Swagger UI)
++
++With the service running, open <http://localhost:8080/swagger-ui.html>. The page renders the
++checked-in contract [`api/openapi.yaml`](api/openapi.yaml), served unchanged at `/openapi.yaml`,
++rather than a spec generated from the code. It therefore documents exactly what the API
++compatibility gate enforces. "Try it out" is enabled on every operation and sends real requests
++to the running service; the request examples come from the contract.
++
++A walkthrough that exercises every behaviour:
++
++1. `POST /api/v1/links` with the `generated` example: 201 with `code` and `shortUrl`.
++2. The same operation with `customAliasWithExpiry`: 201. Send it again: 409 `Alias already in use`.
++3. `GET /api/v1/links/{code}`: 200. An unknown code: 404.
++4. `GET /{code}` with an unknown code: 404 problem document. For a real code, open its `shortUrl`
++   in a new tab, or use `curl -i`, to see the 302. Swagger UI cannot show a redirect: the
++   browser follows it to the target site and, unless that site allows cross-origin requests,
++   reports "Failed to fetch". That is the browser's CORS check, not a service failure.
++5. `DELETE /api/v1/links/{code}`: 204. Afterwards `GET /{code}` returns 404 and creating the same
++   alias returns 409, because codes are never reused.
++6. Invalid input returns 400 with an `errors` list: leave out `url`, use
++   `https://bank.com@evil.com`, or use the reserved alias `swagger`.
++7. More than 20 `POST`s within a minute return 429 with `Retry-After`.
++8. Expiry: create a link whose `expiresAt` is a minute ahead and wait; `GET /{code}` returns 410.
++   If you followed the link before it expired, it keeps redirecting until its cache entry
++   expires (up to 10 minutes). That is the known defect the brownfield scenario fixes
++   ([issue #1](../docs/scenarios/brownfield.md)).
++
++Swagger UI is a development aid; switch it off with `SPRINGDOC_SWAGGERUI_ENABLED=false`.
++
++## Building and testing
++
++| Command | What runs | Needs Docker |
++|---|---|---|
++| `mvn verify` | unit tests (surefire), integration tests `*IT` (failsafe + Testcontainers PostgreSQL), Checkstyle, JaCoCo 80% line gate on merged unit + IT coverage | yes |
++| `mvn -DskipITs verify` | unit tests, Checkstyle, JaCoCo report (the gate is skipped: it is defined on the merged unit + IT data) | no |
++
++Integration tests share one PostgreSQL container (`postgres:17-alpine`) and one Spring context
++across all test classes (see `IntegrationTestSupport`). Without Docker they fail rather than
++being skipped silently; use `-DskipITs` explicitly. Coverage report: `target/site/jacoco/`.
++
++## API by example
+ 
+ ```bash
+-docker compose up -d
+-mvn spring-boot:run
++# Create a link with a generated 7-character code -> 201 + Location
++curl -i -X POST http://localhost:8080/api/v1/links \
++  -H 'Content-Type: application/json' \
++  -d '{"url": "https://example.com/some/long/path"}'
++
++# Create with a custom alias and an expiry
++curl -i -X POST http://localhost:8080/api/v1/links \
++  -H 'Content-Type: application/json' \
++  -d '{"url": "https://example.com/launch", "customAlias": "launch-2026", "expiresAt": "2026-12-31T23:59:59Z"}'
++
++# Follow the short link -> 302, Location: <target>, Cache-Control: no-store (404 unknown/deleted, 410 expired)
++curl -i http://localhost:8080/launch-2026
++
++# Link metadata -> 200 (404 if unknown or deleted)
++curl -i http://localhost:8080/api/v1/links/launch-2026
++
++# Delete (soft) -> 204, then 404; the code is never reused
++curl -i -X DELETE http://localhost:8080/api/v1/links/launch-2026
++
++# Operations
++curl http://localhost:8080/actuator/health
++curl http://localhost:8080/actuator/info
++curl 'http://localhost:8080/actuator/metrics/cache.gets?tag=cache:redirects'
++```
++
++Example response body (`201` / `200`):
++
++```json
++{"code":"aZ3kP9q","shortUrl":"http://localhost:8080/aZ3kP9q","targetUrl":"https://example.com/some/long/path","createdAt":"2026-01-01T00:00:00Z","expiresAt":null}
+ ```
+ 
+-Integration tests (`*IT`) use Testcontainers and need Docker: `mvn verify`.
++Errors are RFC 9457 problem documents (`application/problem+json`): 400 validation or policy
++violation (with an `errors` list of `{field, message}`), 404, 409 alias conflict, 410 expired,
++415, 429 rate limited (with `Retry-After` in seconds), 500.
++
++## Configuration
++
++Set in `src/main/resources/application.yml`; override with environment variables (relaxed
++binding, e.g. `SHORTENER_BASEURL`) or command-line arguments, e.g.
++`java -jar target/url-shortener-0.1.0-SNAPSHOT.jar --shortener.code-length=8` or
++`mvn spring-boot:run -Dspring-boot.run.arguments=--shortener.code-length=8`.
++
++| Property | Env var | Default | Meaning |
++|---|---|---|---|
++| `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/shortener` | JDBC URL |
++| `spring.datasource.username` | `DB_USER` | `shortener` | DB user |
++| `spring.datasource.password` | `DB_PASSWORD` | `shortener` | DB password |
++| `shortener.base-url` | `SHORTENER_BASEURL` | `http://localhost:8080` | Public base URL for `shortUrl`/`Location`; its host is rejected as a target |
++| `shortener.code-length` | `SHORTENER_CODELENGTH` | `7` | Generated code length (4-32) |
++| `shortener.redirect-cache.ttl` | `SHORTENER_REDIRECTCACHE_TTL` | `10m` | Redirect cache time-to-live after load |
++| `shortener.redirect-cache.max-size` | `SHORTENER_REDIRECTCACHE_MAXSIZE` | `10000` | Max cached codes |
++| `shortener.rate-limit.requests-per-period` | `SHORTENER_RATELIMIT_REQUESTSPERPERIOD` | `20` | Token bucket capacity per client |
++| `shortener.rate-limit.period` | `SHORTENER_RATELIMIT_PERIOD` | `1m` | Period over which the bucket refills completely |
++| `shortener.rate-limit.max-tracked-clients` | `SHORTENER_RATELIMIT_MAXTRACKEDCLIENTS` | `100000` | Upper bound on in-memory buckets |
++| `shortener.trust-forwarded-headers` | `SHORTENER_TRUSTFORWARDEDHEADERS` | `false` | Key the rate limit on the first `X-Forwarded-For` hop (only behind a trusted proxy) |
++
++Invalid values (e.g. `code-length=3`) fail startup.
++
++## Design notes
++
++- **302, not 301.** A 301 is cached by browsers indefinitely, so later visits would never reach
++  the service; that breaks deletion, expiry and any future click analytics. Redirects also send
++  `Cache-Control: no-store`.
++- **Random base62 codes.** `RandomBase62CodeGenerator` draws 7 characters from `SecureRandom`
++  (62^7, about 3.5 * 10^12 codes): not enumerable, no coordination between instances. The
++  database unique constraint is the source of truth: inserts use
++  `ON CONFLICT (code) DO NOTHING` and a collision is retried with a fresh code up to 5 times,
++  then fails with a 500 (`CodeGenerationException`). No exceptions drive the control flow, and a
++  collision cannot abort a surrounding transaction.
++- **Custom aliases** must match `^[A-Za-z0-9_-]{4,32}$` (the same pattern the redirect route
++  accepts) and must not be a reserved word (`api`, `actuator`, `health`, `admin`, `static`, ...).
++  A taken alias returns 409.
++- **Soft delete.** `DELETE` sets `deleted_at`; the row keeps its code, so a code is never reused
++  (re-creating the alias returns 409). The redirect cache entry is evicted on delete.
++- **Redirect cache.** `LinkResolver` keeps a Caffeine cache of `code -> target URL` (TTL and size
++  configurable, statistics exported as `cache.*` metrics). On a miss it loads the link from the
++  database and applies the not-found and expiry checks; unknown codes are not cached.
++- **Rate limiting.** A hand-rolled per-client token bucket (`RateLimiter`) on
++  `POST /api/v1/links` only, applied by a Spring MVC interceptor so rejections are rendered by
++  the same ProblemDetail advice (429 + `Retry-After`). Refill uses exact integer arithmetic on
++  an injected `Clock`. Buckets live in a size-bounded Caffeine cache that expires idle buckets
++  after one period, which loses nothing because such a bucket would be full again anyway. The
++  limit is per instance; several instances would need a shared store.
++- **Target URL policy.** Only absolute `http`/`https` URLs with a host, at most 2048 characters;
++  URLs with user info are rejected (`https://bank.com@evil.com` actually goes to `evil.com`), and
++  so are URLs pointing at the shortener's own host (redirect loops).
++- **Time** comes from an injected `java.time.Clock` everywhere, so tests control it. Timestamps
++  are stored as `timestamptz` at microsecond precision.
++
++## Layout
++
++```
++src/main/java/io/github/marishasahay/shortener/
++  UrlShortenerApplication.java
++  config/     ShortenerProperties, ClockConfiguration, CacheConfiguration
++  link/       domain, service, repository, controllers, policies, code generator, DTOs, exceptions
++  ratelimit/  RateLimiter, TokenBucket, interceptor and its registration
++  web/        ProblemDetailsAdvice (RFC 9457 error mapping), ApiContractController (/openapi.yaml)
++src/main/resources/db/migration/V1__create_links.sql
++api/openapi.yaml    the API contract; also what Swagger UI shows
++```
+diff --git a/api/openapi.yaml b/api/openapi.yaml
+new file mode 100644
+index 0000000..cf8c086
+--- /dev/null
++++ b/api/openapi.yaml
+@@ -0,0 +1,330 @@
++openapi: 3.1.0
++info:
++  title: URL Shortener API
++  version: 1.0.0
++  description: |
++    Creates short links and redirects short codes to their target URLs.
++
++    All errors are RFC 9457 problem documents (`application/problem+json`). `type` is omitted
++    when it is `about:blank`; `instance` is the request path. Operational endpoints
++    (`/actuator/health`, `/actuator/info`, `/actuator/metrics`) are not part of this contract.
++servers:
++  - url: http://localhost:8080
++
++paths:
++  /api/v1/links:
++    post:
++      operationId: createLink
++      summary: Create a short link
++      description: |
++        Creates a link with a random 7-character base62 code, or with `customAlias` as the code.
++        Rate limited per client IP (default 20 requests per minute, token bucket).
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: '#/components/schemas/CreateLinkRequest'
++            examples:
++              generated:
++                value:
++                  url: https://example.com/some/long/path
++              customAliasWithExpiry:
++                value:
++                  url: https://example.com/launch
++                  customAlias: launch-2026
++                  expiresAt: '2026-12-31T23:59:59Z'
++      responses:
++        '201':
++          description: Link created.
++          headers:
++            Location:
++              description: Absolute URL of the link's metadata resource (`{baseUrl}/api/v1/links/{code}`).
++              schema:
++                type: string
++                format: uri
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/LinkResponse'
++        '400':
++          $ref: '#/components/responses/BadRequest'
++        '409':
++          $ref: '#/components/responses/AliasConflict'
++        '415':
++          $ref: '#/components/responses/UnsupportedMediaType'
++        '429':
++          $ref: '#/components/responses/TooManyRequests'
++        '500':
++          $ref: '#/components/responses/InternalServerError'
++
++  /api/v1/links/{code}:
++    parameters:
++      - name: code
++        in: path
++        required: true
++        description: The short code.
++        schema:
++          type: string
++    get:
++      operationId: getLink
++      summary: Get link metadata
++      description: Returns the link, including expired links. Deleted links are not found.
++      responses:
++        '200':
++          description: The link.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/LinkResponse'
++        '404':
++          $ref: '#/components/responses/NotFound'
++        '500':
++          $ref: '#/components/responses/InternalServerError'
++    delete:
++      operationId: deleteLink
++      summary: Delete a link
++      description: |
++        Soft-deletes the link and evicts it from the redirect cache. The code is never reused:
++        creating a link with the same alias afterwards returns 409.
++      responses:
++        '204':
++          description: Link deleted.
++        '404':
++          $ref: '#/components/responses/NotFound'
++        '500':
++          $ref: '#/components/responses/InternalServerError'
++
++  /{code}:
++    parameters:
++      - name: code
++        in: path
++        required: true
++        description: |
++          The short code. Paths that do not match the pattern are not routed to this operation
++          and return 404.
++        schema:
++          type: string
++          pattern: '^[A-Za-z0-9_-]{4,32}$'
++    get:
++      operationId: redirect
++      summary: Redirect to the target URL
++      description: |
++        Responds with `302 Found` (not 301) and `Cache-Control: no-store`, so browsers do not
++        cache the redirect and every visit reaches the service.
++      responses:
++        '302':
++          description: Redirect to the target URL.
++          headers:
++            Location:
++              description: The target URL.
++              schema:
++                type: string
++                format: uri
++            Cache-Control:
++              description: Always `no-store`.
++              schema:
++                type: string
++                const: no-store
++        '404':
++          $ref: '#/components/responses/NotFound'
++        '410':
++          $ref: '#/components/responses/Gone'
++        '500':
++          $ref: '#/components/responses/InternalServerError'
++
++components:
++  schemas:
++    CreateLinkRequest:
++      type: object
++      required: [url]
++      properties:
++        url:
++          type: string
++          format: uri
++          maxLength: 2048
++          description: |
++            Absolute `http` or `https` URL with a host. Rejected (400) if it contains user info
++            (e.g. `https://bank.com@evil.com`), points at the shortener's own host, or is longer
++            than 2048 characters. Leading and trailing whitespace is trimmed.
++          examples: ['https://example.com/some/long/path']
++        customAlias:
++          type: string
++          pattern: '^[A-Za-z0-9_-]{4,32}$'
++          description: |
++            Optional code to use instead of a generated one. Reserved words (case-insensitive):
++            api, actuator, health, admin, static, assets, public, login, logout, error, favicon,
++            robots, metrics, info, docs, swagger, openapi, www.
++          examples: [launch-2026]
++        expiresAt:
++          type: string
++          format: date-time
++          description: Optional ISO-8601 instant; must be in the future. Stored at microsecond precision.
++          examples: ['2026-12-31T23:59:59Z']
++
++    LinkResponse:
++      type: object
++      required: [code, shortUrl, targetUrl, createdAt, expiresAt]
++      properties:
++        code:
++          type: string
++          pattern: '^[A-Za-z0-9_-]{4,32}$'
++          examples: [aZ3kP9q]
++        shortUrl:
++          type: string
++          format: uri
++          description: '`{baseUrl}/{code}`'
++          examples: ['http://localhost:8080/aZ3kP9q']
++        targetUrl:
++          type: string
++          format: uri
++          examples: ['https://example.com/some/long/path']
++        createdAt:
++          type: string
++          format: date-time
++          examples: ['2026-01-01T00:00:00Z']
++        expiresAt:
++          type: [string, 'null']
++          format: date-time
++          description: '`null` when the link never expires.'
++          examples: [null]
++
++    ProblemDetail:
++      type: object
++      description: RFC 9457 problem document.
++      required: [title, status, instance]
++      properties:
++        type:
++          type: string
++          format: uri-reference
++          description: Omitted when `about:blank`.
++        title:
++          type: string
++          description: |
++            Short summary. Application errors use: `Invalid request`, `Link not found`,
++            `Link expired`, `Alias already in use`, `Too many requests`,
++            `Short code generation failed`, `Internal server error`. Framework errors (e.g.
++            malformed JSON, unsupported media type) use the HTTP reason phrase.
++        status:
++          type: integer
++        detail:
++          type: string
++        instance:
++          type: string
++          format: uri-reference
++          description: The request path.
++        errors:
++          type: array
++          description: Present on `Invalid request` (400) problems.
++          items:
++            $ref: '#/components/schemas/FieldViolation'
++
++    FieldViolation:
++      type: object
++      required: [field, message]
++      properties:
++        field:
++          type: string
++          examples: [url]
++        message:
++          type: string
++          examples: [must not be blank]
++
++  responses:
++    BadRequest:
++      description: |
++        Invalid request: bean validation failure (missing `url`), target URL or alias policy
++        violation, expiry not in the future, or malformed / unparseable JSON.
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++          examples:
++            validation:
++              value:
++                title: Invalid request
++                status: 400
++                detail: Request validation failed
++                instance: /api/v1/links
++                errors:
++                  - field: url
++                    message: must not be blank
++            policy:
++              value:
++                title: Invalid request
++                status: 400
++                detail: url must not contain user info
++                instance: /api/v1/links
++                errors:
++                  - field: url
++                    message: must not contain user info
++            malformedJson:
++              value:
++                title: Bad Request
++                status: 400
++                detail: Failed to read request
++                instance: /api/v1/links
++    NotFound:
++      description: No active link exists for the code (never created, or deleted).
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++          example:
++            title: Link not found
++            status: 404
++            detail: No link exists for code 'aZ3kP9q'
++            instance: /aZ3kP9q
++    Gone:
++      description: The link exists but has expired.
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++          example:
++            title: Link expired
++            status: 410
++            detail: The link for code 'aZ3kP9q' has expired
++            instance: /aZ3kP9q
++    AliasConflict:
++      description: The custom alias is already in use (including by a deleted link).
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++          example:
++            title: Alias already in use
++            status: 409
++            detail: The alias 'launch-2026' is already in use
++            instance: /api/v1/links
++    UnsupportedMediaType:
++      description: The request body is not `application/json`.
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++    TooManyRequests:
++      description: The client exceeded the link-creation rate limit.
++      headers:
++        Retry-After:
++          description: Seconds until the next request will be accepted (at least 1).
++          schema:
++            type: integer
++            minimum: 1
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
++          example:
++            title: Too many requests
++            status: 429
++            detail: Rate limit exceeded; retry after 3 seconds
++            instance: /api/v1/links
++    InternalServerError:
++      description: |
++        Unexpected failure, or no unique code could be generated within 5 attempts
++        (`Short code generation failed`).
++      content:
++        application/problem+json:
++          schema:
++            $ref: '#/components/schemas/ProblemDetail'
+diff --git a/pom.xml b/pom.xml
+index 14c44b2..c57f4f6 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -19,13 +19,14 @@
+   <artifactId>url-shortener</artifactId>
+   <version>0.1.0-SNAPSHOT</version>
+   <name>URL Shortener</name>
+-  <description>Greenfield scaffold: an empty Spring Boot 4 service the orchestrator builds into.</description>
++  <description>URL shortener service built and evolved by the agentic SDLC orchestrator.</description>
+ 
+   <properties>
+     <java.version>21</java.version>
+     <jacoco.version>0.8.16</jacoco.version>
+     <checkstyle-plugin.version>3.6.0</checkstyle-plugin.version>
+     <checkstyle.version>14.3.0</checkstyle.version>
++    <springdoc.version>3.1.1</springdoc.version>
+     <jacoco.line.coverage>0.80</jacoco.line.coverage>
+     <!--
+       Integration tests (*IT) need Docker for Testcontainers. `-DskipITs` skips them and, with
+@@ -58,6 +59,12 @@
+       <groupId>org.springframework.boot</groupId>
+       <artifactId>spring-boot-starter-actuator</artifactId>
+     </dependency>
++    <!-- Swagger UI only; it renders the checked-in contract api/openapi.yaml (see application.yml). -->
++    <dependency>
++      <groupId>org.springdoc</groupId>
++      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
++      <version>${springdoc.version}</version>
++    </dependency>
+     <dependency>
+       <groupId>com.github.ben-manes.caffeine</groupId>
+       <artifactId>caffeine</artifactId>
+@@ -109,6 +116,36 @@
+         </executions>
+       </plugin>
+ 
++      <!--
++        Puts the API contract on the classpath (served at /openapi.yaml by ApiContractController
++        for Swagger UI). Copied rather than moved so api/openapi.yaml stays the single source of
++        truth that the API compatibility gate reads.
++      -->
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-resources-plugin</artifactId>
++        <executions>
++          <execution>
++            <id>serve-api-contract</id>
++            <phase>process-resources</phase>
++            <goals>
++              <goal>copy-resources</goal>
++            </goals>
++            <configuration>
++              <outputDirectory>${project.build.outputDirectory}/api</outputDirectory>
++              <resources>
++                <resource>
++                  <directory>${project.basedir}/api</directory>
++                  <includes>
++                    <include>openapi.yaml</include>
++                  </includes>
++                </resource>
++              </resources>
++            </configuration>
++          </execution>
++        </executions>
++      </plugin>
++
+       <!-- Unit tests (*Test) run with surefire; integration tests (*IT) with failsafe. -->
+       <plugin>
+         <groupId>org.apache.maven.plugins</groupId>
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+new file mode 100644
+index 0000000..c075d3c
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/config/CacheConfiguration.java
+@@ -0,0 +1,30 @@
++package io.github.marishasahay.shortener.config;
++
++import com.github.benmanes.caffeine.cache.Cache;
++import com.github.benmanes.caffeine.cache.Caffeine;
++import io.micrometer.core.instrument.MeterRegistry;
++import io.micrometer.core.instrument.binder.cache.CaffeineCacheMetrics;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++/**
++ * Builds the redirect cache ({@code code -> target URL}) and publishes its statistics as
++ * Micrometer metrics under {@code cache.*} with tag {@code cache=redirects}.
++ */
++@Configuration(proxyBeanMethods = false)
++public class CacheConfiguration {
++
++  static final String REDIRECT_CACHE_NAME = "redirects";
++
++  @Bean
++  public Cache<String, String> redirectCache(ShortenerProperties properties,
++      MeterRegistry meterRegistry) {
++    ShortenerProperties.RedirectCache settings = properties.redirectCache();
++    Cache<String, String> cache = Caffeine.newBuilder()
++        .expireAfterWrite(settings.ttl())
++        .maximumSize(settings.maxSize())
++        .recordStats()
++        .build();
++    return CaffeineCacheMetrics.monitor(meterRegistry, cache, REDIRECT_CACHE_NAME);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/ClockConfiguration.java b/src/main/java/io/github/marishasahay/shortener/config/ClockConfiguration.java
+new file mode 100644
+index 0000000..9ab0b6e
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/config/ClockConfiguration.java
+@@ -0,0 +1,18 @@
++package io.github.marishasahay.shortener.config;
++
++import java.time.Clock;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++/**
++ * Exposes the system UTC clock as a bean so every time-dependent component can be tested with a
++ * controllable clock.
++ */
++@Configuration(proxyBeanMethods = false)
++public class ClockConfiguration {
++
++  @Bean
++  public Clock clock() {
++    return Clock.systemUTC();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java b/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java
+new file mode 100644
+index 0000000..b4ab651
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/config/ShortenerProperties.java
+@@ -0,0 +1,54 @@
++package io.github.marishasahay.shortener.config;
++
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.Max;
++import jakarta.validation.constraints.Min;
++import jakarta.validation.constraints.NotNull;
++import jakarta.validation.constraints.Positive;
++import java.net.URI;
++import java.time.Duration;
++import org.springframework.boot.context.properties.ConfigurationProperties;
++import org.springframework.boot.context.properties.bind.DefaultValue;
++import org.springframework.validation.annotation.Validated;
++
++/**
++ * Typed configuration for the shortener, bound from the {@code shortener.*} namespace.
++ *
++ * @param baseUrl public base URL used to build short URLs; its host is also blocked as a target
++ * @param codeLength length of generated short codes
++ * @param redirectCache redirect cache settings
++ * @param rateLimit rate limit settings for link creation
++ * @param trustForwardedHeaders whether to key rate limiting on the first X-Forwarded-For hop
++ */
++@Validated
++@ConfigurationProperties(prefix = "shortener")
++public record ShortenerProperties(
++    @DefaultValue("http://localhost:8080") @NotNull URI baseUrl,
++    @DefaultValue("7") @Min(4) @Max(32) int codeLength,
++    @DefaultValue @Valid RedirectCache redirectCache,
++    @DefaultValue @Valid RateLimit rateLimit,
++    @DefaultValue("false") boolean trustForwardedHeaders) {
++
++  /**
++   * Settings for the in-memory {@code code -> target URL} cache.
++   *
++   * @param ttl how long an entry stays cached after it is loaded
++   * @param maxSize maximum number of cached entries
++   */
++  public record RedirectCache(
++      @DefaultValue("10m") @NotNull Duration ttl,
++      @DefaultValue("10000") @Positive long maxSize) {}
++
++  /**
++   * Token-bucket settings: {@code requestsPerPeriod} tokens, refilled continuously over
++   * {@code period}.
++   *
++   * @param requestsPerPeriod bucket capacity and refill amount per period
++   * @param period refill period
++   * @param maxTrackedClients upper bound on the number of client buckets kept in memory
++   */
++  public record RateLimit(
++      @DefaultValue("20") @Positive int requestsPerPeriod,
++      @DefaultValue("1m") @NotNull Duration period,
++      @DefaultValue("100000") @Positive long maxTrackedClients) {}
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/AliasAlreadyExistsException.java b/src/main/java/io/github/marishasahay/shortener/link/AliasAlreadyExistsException.java
+new file mode 100644
+index 0000000..2b33e2f
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/AliasAlreadyExistsException.java
+@@ -0,0 +1,12 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * The requested custom alias is taken (possibly by a deleted link, since codes are never
++ * reused). Mapped to {@code 409 Conflict}.
++ */
++public class AliasAlreadyExistsException extends RuntimeException {
++
++  public AliasAlreadyExistsException(String alias) {
++    super("The alias '" + alias + "' is already in use");
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/AliasPolicy.java b/src/main/java/io/github/marishasahay/shortener/link/AliasPolicy.java
+new file mode 100644
+index 0000000..6ba2bc4
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/AliasPolicy.java
+@@ -0,0 +1,35 @@
++package io.github.marishasahay.shortener.link;
++
++import java.util.Locale;
++import java.util.Set;
++import java.util.regex.Pattern;
++
++/**
++ * Validates client-chosen custom aliases: URL-safe characters only, a bounded length that matches
++ * the redirect route, and no reserved words that could be confused with application paths.
++ */
++public class AliasPolicy {
++
++  static final String FIELD = "customAlias";
++  static final Pattern ALIAS_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{4,32}$");
++
++  static final Set<String> RESERVED_WORDS = Set.of(
++      "api", "actuator", "health", "admin", "static", "assets", "public", "login", "logout",
++      "error", "favicon", "robots", "metrics", "info", "docs", "swagger", "openapi", "www");
++
++  /**
++   * Validates an alias.
++   *
++   * @param alias the alias submitted by the client
++   * @throws InvalidLinkRequestException if the alias is malformed or reserved
++   */
++  public void validate(String alias) {
++    if (alias == null || !ALIAS_PATTERN.matcher(alias).matches()) {
++      throw new InvalidLinkRequestException(FIELD,
++          "must be 4-32 characters of letters, digits, '_' or '-'");
++    }
++    if (RESERVED_WORDS.contains(alias.toLowerCase(Locale.ROOT))) {
++      throw new InvalidLinkRequestException(FIELD, "is a reserved word");
++    }
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/CodeGenerationException.java b/src/main/java/io/github/marishasahay/shortener/link/CodeGenerationException.java
+new file mode 100644
+index 0000000..268574b
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/CodeGenerationException.java
+@@ -0,0 +1,13 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * No unique code could be generated within the retry budget. This indicates a keyspace that is
++ * too small for the data volume (raise {@code shortener.code-length}). Mapped to
++ * {@code 500 Internal Server Error}.
++ */
++public class CodeGenerationException extends RuntimeException {
++
++  public CodeGenerationException(int attempts) {
++    super("Could not generate a unique short code after " + attempts + " attempts");
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/CodeGenerator.java b/src/main/java/io/github/marishasahay/shortener/link/CodeGenerator.java
+new file mode 100644
+index 0000000..86dc71a
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/CodeGenerator.java
+@@ -0,0 +1,14 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * Produces candidate short codes. Uniqueness is enforced by the database, not by the generator.
++ */
++public interface CodeGenerator {
++
++  /**
++   * Generates a new candidate code.
++   *
++   * @return a code made of URL-safe characters
++   */
++  String generate();
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/CreateLinkRequest.java b/src/main/java/io/github/marishasahay/shortener/link/CreateLinkRequest.java
+new file mode 100644
+index 0000000..9ae1968
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/CreateLinkRequest.java
+@@ -0,0 +1,13 @@
++package io.github.marishasahay.shortener.link;
++
++import jakarta.validation.constraints.NotBlank;
++import java.time.Instant;
++
++/**
++ * Request body of {@code POST /api/v1/links}.
++ *
++ * @param url the target URL (required)
++ * @param customAlias optional custom code
++ * @param expiresAt optional expiry instant (ISO-8601), must be in the future
++ */
++public record CreateLinkRequest(@NotBlank String url, String customAlias, Instant expiresAt) {}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/InvalidLinkRequestException.java b/src/main/java/io/github/marishasahay/shortener/link/InvalidLinkRequestException.java
+new file mode 100644
+index 0000000..1b3b3af
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/InvalidLinkRequestException.java
+@@ -0,0 +1,31 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * A create-link request violates a business rule (target URL policy, alias policy or expiry).
++ * Mapped to {@code 400 Bad Request}.
++ */
++public class InvalidLinkRequestException extends RuntimeException {
++
++  private final String field;
++  private final String reason;
++
++  /**
++   * Creates the exception.
++   *
++   * @param field the request field that is invalid
++   * @param reason why the value is invalid, phrased to follow the field name
++   */
++  public InvalidLinkRequestException(String field, String reason) {
++    super(field + " " + reason);
++    this.field = field;
++    this.reason = reason;
++  }
++
++  public String field() {
++    return field;
++  }
++
++  public String reason() {
++    return reason;
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/Link.java b/src/main/java/io/github/marishasahay/shortener/link/Link.java
+new file mode 100644
+index 0000000..d4502fe
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/Link.java
+@@ -0,0 +1,25 @@
++package io.github.marishasahay.shortener.link;
++
++import java.time.Instant;
++
++/**
++ * A persisted short link.
++ *
++ * @param id surrogate key
++ * @param code the short code (generated or custom alias), unique forever
++ * @param targetUrl where the short code redirects to
++ * @param createdAt creation instant
++ * @param expiresAt optional expiry instant; {@code null} means the link never expires
++ */
++public record Link(long id, String code, String targetUrl, Instant createdAt, Instant expiresAt) {
++
++  /**
++   * Whether the link has expired at the given instant.
++   *
++   * @param now the instant to evaluate against
++   * @return {@code true} if an expiry is set and {@code now} is at or after it
++   */
++  public boolean isExpiredAt(Instant now) {
++    return expiresAt != null && !now.isBefore(expiresAt);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkApiController.java b/src/main/java/io/github/marishasahay/shortener/link/LinkApiController.java
+new file mode 100644
+index 0000000..99c1749
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkApiController.java
+@@ -0,0 +1,77 @@
++package io.github.marishasahay.shortener.link;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import jakarta.validation.Valid;
++import java.net.URI;
++import org.springframework.http.MediaType;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.DeleteMapping;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++/**
++ * Management API for short links.
++ */
++@RestController
++@RequestMapping(LinkApiController.BASE_PATH)
++public class LinkApiController {
++
++  public static final String BASE_PATH = "/api/v1/links";
++
++  private final LinkService linkService;
++  private final String baseUrl;
++
++  public LinkApiController(LinkService linkService, ShortenerProperties properties) {
++    this.linkService = linkService;
++    this.baseUrl = stripTrailingSlash(properties.baseUrl().toString());
++  }
++
++  /**
++   * Creates a short link.
++   *
++   * @param request the link to create
++   * @return {@code 201 Created} with the link and a {@code Location} header for its metadata
++   */
++  @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
++      produces = MediaType.APPLICATION_JSON_VALUE)
++  public ResponseEntity<LinkResponse> create(@Valid @RequestBody CreateLinkRequest request) {
++    Link link = linkService.create(request.url(), request.customAlias(), request.expiresAt());
++    URI location = URI.create(baseUrl + BASE_PATH + "/" + link.code());
++    return ResponseEntity.created(location).body(toResponse(link));
++  }
++
++  /**
++   * Returns a link's metadata.
++   *
++   * @param code the short code
++   * @return the link
++   */
++  @GetMapping(path = "/{code}", produces = MediaType.APPLICATION_JSON_VALUE)
++  public LinkResponse get(@PathVariable String code) {
++    return toResponse(linkService.get(code));
++  }
++
++  /**
++   * Soft-deletes a link.
++   *
++   * @param code the short code
++   * @return {@code 204 No Content}
++   */
++  @DeleteMapping("/{code}")
++  public ResponseEntity<Void> delete(@PathVariable String code) {
++    linkService.delete(code);
++    return ResponseEntity.noContent().build();
++  }
++
++  private LinkResponse toResponse(Link link) {
++    return LinkResponse.of(link, baseUrl + "/" + link.code());
++  }
++
++  private static String stripTrailingSlash(String url) {
++    return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkConfiguration.java b/src/main/java/io/github/marishasahay/shortener/link/LinkConfiguration.java
+new file mode 100644
+index 0000000..8c6ca57
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkConfiguration.java
+@@ -0,0 +1,28 @@
++package io.github.marishasahay.shortener.link;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import java.security.SecureRandom;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++/**
++ * Wires the link feature's collaborators that are plain classes.
++ */
++@Configuration(proxyBeanMethods = false)
++public class LinkConfiguration {
++
++  @Bean
++  public CodeGenerator codeGenerator(ShortenerProperties properties) {
++    return new RandomBase62CodeGenerator(new SecureRandom(), properties.codeLength());
++  }
++
++  @Bean
++  public TargetUrlPolicy targetUrlPolicy(ShortenerProperties properties) {
++    return new TargetUrlPolicy(properties.baseUrl().getHost());
++  }
++
++  @Bean
++  public AliasPolicy aliasPolicy() {
++    return new AliasPolicy();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkExpiredException.java b/src/main/java/io/github/marishasahay/shortener/link/LinkExpiredException.java
+new file mode 100644
+index 0000000..73eec0e
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkExpiredException.java
+@@ -0,0 +1,11 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * The link exists but its expiry has passed. Mapped to {@code 410 Gone}.
++ */
++public class LinkExpiredException extends RuntimeException {
++
++  public LinkExpiredException(String code) {
++    super("The link for code '" + code + "' has expired");
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkNotFoundException.java b/src/main/java/io/github/marishasahay/shortener/link/LinkNotFoundException.java
+new file mode 100644
+index 0000000..447ca18
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkNotFoundException.java
+@@ -0,0 +1,11 @@
++package io.github.marishasahay.shortener.link;
++
++/**
++ * No active link exists for a code (never created or deleted). Mapped to {@code 404 Not Found}.
++ */
++public class LinkNotFoundException extends RuntimeException {
++
++  public LinkNotFoundException(String code) {
++    super("No link exists for code '" + code + "'");
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkRepository.java b/src/main/java/io/github/marishasahay/shortener/link/LinkRepository.java
+new file mode 100644
+index 0000000..c482e07
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkRepository.java
+@@ -0,0 +1,114 @@
++package io.github.marishasahay.shortener.link;
++
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.sql.Types;
++import java.time.Instant;
++import java.time.OffsetDateTime;
++import java.time.ZoneOffset;
++import java.util.Optional;
++import org.springframework.jdbc.core.SqlParameterValue;
++import org.springframework.jdbc.core.simple.JdbcClient;
++import org.springframework.stereotype.Repository;
++
++/**
++ * Explicit-SQL persistence for {@link Link}s. Deleted links are soft-deleted and invisible to
++ * lookups, but their codes stay in the table so they are never reused.
++ */
++@Repository
++public class LinkRepository {
++
++  private static final String INSERT_SQL = """
++      insert into links (code, target_url, created_at, expires_at)
++      values (:code, :targetUrl, :createdAt, :expiresAt)
++      on conflict (code) do nothing
++      returning id
++      """;
++
++  private static final String FIND_ACTIVE_SQL = """
++      select id, code, target_url, created_at, expires_at
++        from links
++       where code = :code
++         and deleted_at is null
++      """;
++
++  private static final String SOFT_DELETE_SQL = """
++      update links
++         set deleted_at = :deletedAt
++       where code = :code
++         and deleted_at is null
++      """;
++
++  private final JdbcClient jdbcClient;
++
++  public LinkRepository(JdbcClient jdbcClient) {
++    this.jdbcClient = jdbcClient;
++  }
++
++  /**
++   * Inserts a link unless its code is already taken (including by a deleted link).
++   *
++   * @param code the short code
++   * @param targetUrl the validated target URL
++   * @param createdAt creation instant
++   * @param expiresAt optional expiry instant
++   * @return the inserted link, or empty if the code already exists
++   */
++  public Optional<Link> insertIfAbsent(String code, String targetUrl, Instant createdAt,
++      Instant expiresAt) {
++    return jdbcClient.sql(INSERT_SQL)
++        .param("code", code)
++        .param("targetUrl", targetUrl)
++        .param("createdAt", timestamp(createdAt))
++        .param("expiresAt", timestamp(expiresAt))
++        .query(Long.class)
++        .optional()
++        .map(id -> new Link(id, code, targetUrl, createdAt, expiresAt));
++  }
++
++  /**
++   * Finds a link that has not been deleted. Expired links are returned.
++   *
++   * @param code the short code
++   * @return the link, or empty if it does not exist or was deleted
++   */
++  public Optional<Link> findActiveByCode(String code) {
++    return jdbcClient.sql(FIND_ACTIVE_SQL)
++        .param("code", code)
++        .query(LinkRepository::mapRow)
++        .optional();
++  }
++
++  /**
++   * Soft-deletes a link.
++   *
++   * @param code the short code
++   * @param deletedAt deletion instant
++   * @return {@code true} if an active link was deleted
++   */
++  public boolean softDelete(String code, Instant deletedAt) {
++    int updated = jdbcClient.sql(SOFT_DELETE_SQL)
++        .param("code", code)
++        .param("deletedAt", timestamp(deletedAt))
++        .update();
++    return updated > 0;
++  }
++
++  private static SqlParameterValue timestamp(Instant instant) {
++    OffsetDateTime value = instant == null ? null : instant.atOffset(ZoneOffset.UTC);
++    return new SqlParameterValue(Types.TIMESTAMP_WITH_TIMEZONE, value);
++  }
++
++  private static Link mapRow(ResultSet rs, int rowNum) throws SQLException {
++    return new Link(
++        rs.getLong("id"),
++        rs.getString("code"),
++        rs.getString("target_url"),
++        toInstant(rs.getObject("created_at", OffsetDateTime.class)),
++        toInstant(rs.getObject("expires_at", OffsetDateTime.class)));
++  }
++
++  private static Instant toInstant(OffsetDateTime value) {
++    return value == null ? null : value.toInstant();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+new file mode 100644
+index 0000000..d8bdc9f
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
+@@ -0,0 +1,61 @@
++package io.github.marishasahay.shortener.link;
++
++import com.github.benmanes.caffeine.cache.Cache;
++import java.time.Clock;
++import org.springframework.stereotype.Component;
++
++/**
++ * Resolves short codes to target URLs on the redirect hot path, backed by a Caffeine cache of
++ * {@code code -> target URL} in front of the database.
++ */
++@Component
++public class LinkResolver {
++
++  private final Cache<String, String> redirectCache;
++  private final LinkRepository repository;
++  private final Clock clock;
++
++  /**
++   * Creates the resolver.
++   *
++   * @param redirectCache the bounded redirect cache
++   * @param repository link persistence
++   * @param clock time source
++   */
++  public LinkResolver(Cache<String, String> redirectCache, LinkRepository repository,
++      Clock clock) {
++    this.redirectCache = redirectCache;
++    this.repository = repository;
++    this.clock = clock;
++  }
++
++  /**
++   * Resolves a code to its target URL.
++   *
++   * @param code the short code
++   * @return the target URL
++   * @throws LinkNotFoundException if no active link exists for the code
++   * @throws LinkExpiredException if the link has expired
++   */
++  public String resolve(String code) {
++    return redirectCache.get(code, this::load);
++  }
++
++  /**
++   * Removes a code from the cache, e.g. after the link was deleted.
++   *
++   * @param code the short code
++   */
++  public void evict(String code) {
++    redirectCache.invalidate(code);
++  }
++
++  private String load(String code) {
++    Link link = repository.findActiveByCode(code)
++        .orElseThrow(() -> new LinkNotFoundException(code));
++    if (link.isExpiredAt(clock.instant())) {
++      throw new LinkExpiredException(code);
++    }
++    return link.targetUrl();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkResponse.java b/src/main/java/io/github/marishasahay/shortener/link/LinkResponse.java
+new file mode 100644
+index 0000000..a8c19fa
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkResponse.java
+@@ -0,0 +1,21 @@
++package io.github.marishasahay.shortener.link;
++
++import java.time.Instant;
++
++/**
++ * Representation of a link returned by the API.
++ *
++ * @param code the short code
++ * @param shortUrl the full short URL that redirects to the target
++ * @param targetUrl the target URL
++ * @param createdAt creation instant
++ * @param expiresAt expiry instant, or {@code null} if the link never expires
++ */
++public record LinkResponse(String code, String shortUrl, String targetUrl, Instant createdAt,
++    Instant expiresAt) {
++
++  static LinkResponse of(Link link, String shortUrl) {
++    return new LinkResponse(link.code(), shortUrl, link.targetUrl(), link.createdAt(),
++        link.expiresAt());
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/LinkService.java b/src/main/java/io/github/marishasahay/shortener/link/LinkService.java
+new file mode 100644
+index 0000000..6547514
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/LinkService.java
+@@ -0,0 +1,115 @@
++package io.github.marishasahay.shortener.link;
++
++import java.time.Clock;
++import java.time.Instant;
++import java.time.temporal.ChronoUnit;
++import java.util.Optional;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Service;
++
++/**
++ * Link lifecycle: create (with generated code or custom alias), read metadata, soft delete.
++ */
++@Service
++public class LinkService {
++
++  static final int MAX_CODE_ATTEMPTS = 5;
++  static final String EXPIRES_AT_FIELD = "expiresAt";
++
++  private static final Logger LOG = LoggerFactory.getLogger(LinkService.class);
++
++  private final LinkRepository repository;
++  private final CodeGenerator codeGenerator;
++  private final TargetUrlPolicy targetUrlPolicy;
++  private final AliasPolicy aliasPolicy;
++  private final LinkResolver linkResolver;
++  private final Clock clock;
++
++  /**
++   * Creates the service.
++   *
++   * @param repository link persistence
++   * @param codeGenerator generator for random codes
++   * @param targetUrlPolicy target URL rules
++   * @param aliasPolicy custom alias rules
++   * @param linkResolver redirect resolver whose cache is evicted on delete
++   * @param clock time source
++   */
++  public LinkService(LinkRepository repository, CodeGenerator codeGenerator,
++      TargetUrlPolicy targetUrlPolicy, AliasPolicy aliasPolicy, LinkResolver linkResolver,
++      Clock clock) {
++    this.repository = repository;
++    this.codeGenerator = codeGenerator;
++    this.targetUrlPolicy = targetUrlPolicy;
++    this.aliasPolicy = aliasPolicy;
++    this.linkResolver = linkResolver;
++    this.clock = clock;
++  }
++
++  /**
++   * Creates a short link.
++   *
++   * @param url the target URL
++   * @param customAlias optional alias to use as the code; {@code null} generates a code
++   * @param expiresAt optional expiry, must be in the future
++   * @return the created link
++   * @throws InvalidLinkRequestException if the URL, alias or expiry is invalid
++   * @throws AliasAlreadyExistsException if the alias is taken
++   * @throws CodeGenerationException if no unique code could be generated
++   */
++  public Link create(String url, String customAlias, Instant expiresAt) {
++    String targetUrl = targetUrlPolicy.validate(url);
++    Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
++    Instant expiry = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.MICROS);
++    if (expiry != null && !expiry.isAfter(now)) {
++      throw new InvalidLinkRequestException(EXPIRES_AT_FIELD, "must be in the future");
++    }
++    if (customAlias != null) {
++      aliasPolicy.validate(customAlias);
++      return repository.insertIfAbsent(customAlias, targetUrl, now, expiry)
++          .orElseThrow(() -> new AliasAlreadyExistsException(customAlias));
++    }
++    return insertWithGeneratedCode(targetUrl, now, expiry);
++  }
++
++  /**
++   * Returns the metadata of an active (not deleted) link; expired links are still returned.
++   *
++   * @param code the short code
++   * @return the link
++   * @throws LinkNotFoundException if no active link exists for the code
++   */
++  public Link get(String code) {
++    return repository.findActiveByCode(code)
++        .orElseThrow(() -> new LinkNotFoundException(code));
++  }
++
++  /**
++   * Soft-deletes a link and evicts it from the redirect cache. The code is never reused.
++   *
++   * @param code the short code
++   * @throws LinkNotFoundException if no active link exists for the code
++   */
++  public void delete(String code) {
++    boolean deleted = repository.softDelete(code, clock.instant().truncatedTo(ChronoUnit.MICROS));
++    linkResolver.evict(code);
++    if (!deleted) {
++      throw new LinkNotFoundException(code);
++    }
++  }
++
++  private Link insertWithGeneratedCode(String targetUrl, Instant now, Instant expiry) {
++    for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
++      String code = codeGenerator.generate();
++      Optional<Link> inserted = repository.insertIfAbsent(code, targetUrl, now, expiry);
++      if (inserted.isPresent()) {
++        return inserted.get();
++      }
++      LOG.info("Generated code collided with an existing code (attempt {}/{})", attempt,
++          MAX_CODE_ATTEMPTS);
++    }
++    LOG.error("Exhausted {} attempts to generate a unique code", MAX_CODE_ATTEMPTS);
++    throw new CodeGenerationException(MAX_CODE_ATTEMPTS);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/RandomBase62CodeGenerator.java b/src/main/java/io/github/marishasahay/shortener/link/RandomBase62CodeGenerator.java
+new file mode 100644
+index 0000000..d861790
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/RandomBase62CodeGenerator.java
+@@ -0,0 +1,39 @@
++package io.github.marishasahay.shortener.link;
++
++import java.util.random.RandomGenerator;
++
++/**
++ * Generates fixed-length codes from the base62 alphabet using a (secure) random source. Codes are
++ * not enumerable and need no coordination between instances; with 62^7 (about 3.5 * 10^12)
++ * possible 7-character codes, collisions are rare and handled by a retry on insert.
++ */
++public class RandomBase62CodeGenerator implements CodeGenerator {
++
++  static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
++
++  private final RandomGenerator random;
++  private final int length;
++
++  /**
++   * Creates a generator.
++   *
++   * @param random the random source; production uses {@link java.security.SecureRandom}
++   * @param length the code length, at least 1
++   */
++  public RandomBase62CodeGenerator(RandomGenerator random, int length) {
++    if (length < 1) {
++      throw new IllegalArgumentException("length must be positive, was " + length);
++    }
++    this.random = random;
++    this.length = length;
++  }
++
++  @Override
++  public String generate() {
++    StringBuilder code = new StringBuilder(length);
++    for (int i = 0; i < length; i++) {
++      code.append(ALPHABET.charAt(random.nextInt(ALPHABET.length())));
++    }
++    return code.toString();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java b/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java
+new file mode 100644
+index 0000000..75766f2
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/RedirectController.java
+@@ -0,0 +1,40 @@
++package io.github.marishasahay.shortener.link;
++
++import java.net.URI;
++import org.springframework.http.CacheControl;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RestController;
++
++/**
++ * The public redirect endpoint. Uses {@code 302 Found} with {@code Cache-Control: no-store} so
++ * that browsers ask the service on every visit instead of caching the redirect permanently.
++ * The path pattern only matches valid codes, so it never shadows {@code /api/**} or
++ * {@code /actuator/**}.
++ */
++@RestController
++public class RedirectController {
++
++  private final LinkResolver linkResolver;
++
++  public RedirectController(LinkResolver linkResolver) {
++    this.linkResolver = linkResolver;
++  }
++
++  /**
++   * Redirects to the target URL of a code.
++   *
++   * @param code the short code
++   * @return {@code 302 Found} with the target in the {@code Location} header
++   */
++  @GetMapping("/{code:[A-Za-z0-9_-]{4,32}}")
++  public ResponseEntity<Void> redirect(@PathVariable String code) {
++    String targetUrl = linkResolver.resolve(code);
++    return ResponseEntity.status(HttpStatus.FOUND)
++        .location(URI.create(targetUrl))
++        .cacheControl(CacheControl.noStore())
++        .build();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/link/TargetUrlPolicy.java b/src/main/java/io/github/marishasahay/shortener/link/TargetUrlPolicy.java
+new file mode 100644
+index 0000000..2090650
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/link/TargetUrlPolicy.java
+@@ -0,0 +1,77 @@
++package io.github.marishasahay.shortener.link;
++
++import java.net.URI;
++import java.net.URISyntaxException;
++import java.util.Locale;
++import java.util.Set;
++
++/**
++ * Decides which target URLs may be shortened.
++ *
++ * <p>Only absolute {@code http}/{@code https} URLs with a host are accepted. URLs carrying
++ * user-info are rejected because {@code https://bank.com@evil.com} visually suggests the wrong
++ * host, and URLs pointing at the shortener itself are rejected to prevent redirect loops.
++ */
++public class TargetUrlPolicy {
++
++  static final int MAX_LENGTH = 2048;
++  static final String FIELD = "url";
++
++  private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
++
++  private final String ownHost;
++
++  /**
++   * Creates the policy.
++   *
++   * @param ownHost the shortener's own public host, rejected as a target; may be {@code null}
++   */
++  public TargetUrlPolicy(String ownHost) {
++    this.ownHost = ownHost == null ? null : ownHost.toLowerCase(Locale.ROOT);
++  }
++
++  /**
++   * Validates a candidate target URL.
++   *
++   * @param url the URL submitted by the client
++   * @return the trimmed URL, safe to store and redirect to
++   * @throws InvalidLinkRequestException if the URL violates the policy
++   */
++  public String validate(String url) {
++    if (url == null || url.isBlank()) {
++      throw reject("must not be blank");
++    }
++    String candidate = url.strip();
++    if (candidate.length() > MAX_LENGTH) {
++      throw reject("must be at most " + MAX_LENGTH + " characters");
++    }
++    URI uri = parse(candidate);
++    String scheme = uri.getScheme();
++    if (scheme == null || !ALLOWED_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
++      throw reject("must be an absolute http or https URL");
++    }
++    String host = uri.getHost();
++    if (host == null || host.isBlank()) {
++      throw reject("must contain a valid host");
++    }
++    if (uri.getRawUserInfo() != null) {
++      throw reject("must not contain user info");
++    }
++    if (ownHost != null && ownHost.equals(host.toLowerCase(Locale.ROOT))) {
++      throw reject("must not point at this shortener");
++    }
++    return candidate;
++  }
++
++  private static URI parse(String candidate) {
++    try {
++      return new URI(candidate);
++    } catch (URISyntaxException e) {
++      throw reject("is not a valid URL");
++    }
++  }
++
++  private static InvalidLinkRequestException reject(String message) {
++    return new InvalidLinkRequestException(FIELD, message);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolver.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolver.java
+new file mode 100644
+index 0000000..cbc6b43
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolver.java
+@@ -0,0 +1,33 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import jakarta.servlet.http.HttpServletRequest;
++
++/**
++ * Derives the rate-limit key (client IP) from a request. {@code X-Forwarded-For} is only honoured
++ * when explicitly trusted, because any client can set it to evade the limit.
++ *
++ * @param trustForwardedHeaders whether to use the first {@code X-Forwarded-For} hop
++ */
++public record ClientKeyResolver(boolean trustForwardedHeaders) {
++
++  static final String FORWARDED_FOR = "X-Forwarded-For";
++
++  /**
++   * Resolves the client key.
++   *
++   * @param request the incoming request
++   * @return the first forwarded hop if trusted and present, otherwise the remote address
++   */
++  public String resolve(HttpServletRequest request) {
++    if (trustForwardedHeaders) {
++      String forwardedFor = request.getHeader(FORWARDED_FOR);
++      if (forwardedFor != null) {
++        String firstHop = forwardedFor.split(",", 2)[0].strip();
++        if (!firstHop.isEmpty()) {
++          return firstHop;
++        }
++      }
++    }
++    return request.getRemoteAddr();
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitConfiguration.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitConfiguration.java
+new file mode 100644
+index 0000000..5d0997f
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitConfiguration.java
+@@ -0,0 +1,18 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import java.time.Clock;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++/**
++ * Creates the application-wide {@link RateLimiter}.
++ */
++@Configuration(proxyBeanMethods = false)
++public class RateLimitConfiguration {
++
++  @Bean
++  public RateLimiter rateLimiter(ShortenerProperties properties, Clock clock) {
++    return new RateLimiter(properties.rateLimit(), clock);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitDecision.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitDecision.java
+new file mode 100644
+index 0000000..10c9452
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitDecision.java
+@@ -0,0 +1,20 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import java.time.Duration;
++
++/**
++ * Outcome of a rate-limit check.
++ *
++ * @param allowed whether the request may proceed
++ * @param retryAfter when rejected, how long until a token is available; zero when allowed
++ */
++public record RateLimitDecision(boolean allowed, Duration retryAfter) {
++
++  static RateLimitDecision allow() {
++    return new RateLimitDecision(true, Duration.ZERO);
++  }
++
++  static RateLimitDecision reject(Duration retryAfter) {
++    return new RateLimitDecision(false, retryAfter);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededException.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededException.java
+new file mode 100644
+index 0000000..2ad523f
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededException.java
+@@ -0,0 +1,26 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import java.time.Duration;
++
++/**
++ * The client exhausted its rate limit. Mapped to {@code 429 Too Many Requests} with a
++ * {@code Retry-After} header.
++ */
++public class RateLimitExceededException extends RuntimeException {
++
++  private final Duration retryAfter;
++
++  public RateLimitExceededException(Duration retryAfter) {
++    super("Rate limit exceeded");
++    this.retryAfter = retryAfter;
++  }
++
++  /**
++   * The wait before retrying, rounded up to whole seconds as required by {@code Retry-After}.
++   *
++   * @return seconds to wait, at least 1
++   */
++  public long retryAfterSeconds() {
++    return Math.max(1, Math.ceilDiv(retryAfter.toMillis(), 1000L));
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitInterceptor.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitInterceptor.java
+new file mode 100644
+index 0000000..b81104b
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitInterceptor.java
+@@ -0,0 +1,35 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++import org.springframework.http.HttpMethod;
++import org.springframework.web.servlet.HandlerInterceptor;
++
++/**
++ * Applies the rate limit to {@code POST} requests on the paths it is registered for. Rejections
++ * are thrown as {@link RateLimitExceededException} so they are rendered by the same
++ * {@code ProblemDetail} advice as every other error.
++ */
++public class RateLimitInterceptor implements HandlerInterceptor {
++
++  private final RateLimiter rateLimiter;
++  private final ClientKeyResolver clientKeyResolver;
++
++  public RateLimitInterceptor(RateLimiter rateLimiter, ClientKeyResolver clientKeyResolver) {
++    this.rateLimiter = rateLimiter;
++    this.clientKeyResolver = clientKeyResolver;
++  }
++
++  @Override
++  public boolean preHandle(HttpServletRequest request, HttpServletResponse response,
++      Object handler) {
++    if (!HttpMethod.POST.matches(request.getMethod())) {
++      return true;
++    }
++    RateLimitDecision decision = rateLimiter.tryAcquire(clientKeyResolver.resolve(request));
++    if (!decision.allowed()) {
++      throw new RateLimitExceededException(decision.retryAfter());
++    }
++    return true;
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitWebConfigurer.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitWebConfigurer.java
+new file mode 100644
+index 0000000..aed8f8b
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimitWebConfigurer.java
+@@ -0,0 +1,29 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.link.LinkApiController;
++import org.springframework.stereotype.Component;
++import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
++import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
++
++/**
++ * Registers the rate-limit interceptor for link creation only ({@code POST /api/v1/links}).
++ */
++@Component
++public class RateLimitWebConfigurer implements WebMvcConfigurer {
++
++  private final RateLimiter rateLimiter;
++  private final boolean trustForwardedHeaders;
++
++  public RateLimitWebConfigurer(RateLimiter rateLimiter, ShortenerProperties properties) {
++    this.rateLimiter = rateLimiter;
++    this.trustForwardedHeaders = properties.trustForwardedHeaders();
++  }
++
++  @Override
++  public void addInterceptors(InterceptorRegistry registry) {
++    ClientKeyResolver clientKeyResolver = new ClientKeyResolver(trustForwardedHeaders);
++    registry.addInterceptor(new RateLimitInterceptor(rateLimiter, clientKeyResolver))
++        .addPathPatterns(LinkApiController.BASE_PATH);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimiter.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimiter.java
+new file mode 100644
+index 0000000..6560116
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimiter.java
+@@ -0,0 +1,53 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import com.github.benmanes.caffeine.cache.Cache;
++import com.github.benmanes.caffeine.cache.Caffeine;
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import java.time.Clock;
++
++/**
++ * In-memory, per-client token-bucket rate limiter.
++ *
++ * <p>Buckets live in a size-bounded Caffeine cache so memory cannot grow without limit. A bucket
++ * idle for a full period would be full again anyway, so expiring it after that much inactivity
++ * loses no state. The limit is per instance; a multi-instance deployment needs a shared store.
++ */
++public class RateLimiter {
++
++  private final int capacity;
++  private final long periodMillis;
++  private final Clock clock;
++  private final Cache<String, TokenBucket> buckets;
++
++  /**
++   * Creates a rate limiter.
++   *
++   * @param settings capacity, refill period and the maximum number of tracked clients
++   * @param clock time source used for refill
++   */
++  public RateLimiter(ShortenerProperties.RateLimit settings, Clock clock) {
++    this.capacity = settings.requestsPerPeriod();
++    this.periodMillis = settings.period().toMillis();
++    if (capacity < 1 || periodMillis < 1) {
++      throw new IllegalArgumentException("rate limit capacity and period must be positive");
++    }
++    this.clock = clock;
++    this.buckets = Caffeine.newBuilder()
++        .maximumSize(settings.maxTrackedClients())
++        .expireAfterAccess(settings.period())
++        .build();
++  }
++
++  /**
++   * Takes one token from the client's bucket if available.
++   *
++   * @param clientKey identifies the client, e.g. its IP address
++   * @return whether the request is allowed and, if not, when to retry
++   */
++  public RateLimitDecision tryAcquire(String clientKey) {
++    long now = clock.millis();
++    TokenBucket bucket = buckets.get(clientKey,
++        key -> new TokenBucket(capacity, periodMillis, now));
++    return bucket.tryConsume(now);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/ratelimit/TokenBucket.java b/src/main/java/io/github/marishasahay/shortener/ratelimit/TokenBucket.java
+new file mode 100644
+index 0000000..a1a1be7
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/ratelimit/TokenBucket.java
+@@ -0,0 +1,46 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import java.time.Duration;
++
++/**
++ * A single client's token bucket with continuous refill. To keep refill exact without floating
++ * point, one token is represented as {@code periodMillis} units: every elapsed millisecond adds
++ * {@code capacity} units, so a full period adds exactly {@code capacity} tokens.
++ */
++final class TokenBucket {
++
++  private final long capacity;
++  private final long periodMillis;
++  private final long maxUnits;
++  private long units;
++  private long lastRefillMillis;
++
++  TokenBucket(int capacity, long periodMillis, long nowMillis) {
++    this.capacity = capacity;
++    this.periodMillis = periodMillis;
++    this.maxUnits = capacity * periodMillis;
++    this.units = maxUnits;
++    this.lastRefillMillis = nowMillis;
++  }
++
++  synchronized RateLimitDecision tryConsume(long nowMillis) {
++    refill(nowMillis);
++    if (units >= periodMillis) {
++      units -= periodMillis;
++      return RateLimitDecision.allow();
++    }
++    long missingUnits = periodMillis - units;
++    long waitMillis = Math.ceilDiv(missingUnits, capacity);
++    return RateLimitDecision.reject(Duration.ofMillis(waitMillis));
++  }
++
++  private void refill(long nowMillis) {
++    long elapsed = nowMillis - lastRefillMillis;
++    if (elapsed <= 0) {
++      return;
++    }
++    long boundedElapsed = Math.min(elapsed, periodMillis);
++    units = Math.min(maxUnits, units + boundedElapsed * capacity);
++    lastRefillMillis = nowMillis;
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/web/ApiContractController.java b/src/main/java/io/github/marishasahay/shortener/web/ApiContractController.java
+new file mode 100644
+index 0000000..85f6643
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/web/ApiContractController.java
+@@ -0,0 +1,32 @@
++package io.github.marishasahay.shortener.web;
++
++import org.springframework.core.io.ClassPathResource;
++import org.springframework.core.io.Resource;
++import org.springframework.http.MediaType;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++/**
++ * Serves the hand-written API contract for Swagger UI ({@code /swagger-ui.html}) and API
++ * clients. The build copies {@code api/openapi.yaml} onto the classpath unchanged, so the UI
++ * shows the same document the API compatibility gate enforces. A controller rather than a
++ * static resource because neither Spring nor Tomcat maps {@code .yaml} to a media type.
++ */
++@RestController
++public class ApiContractController {
++
++  public static final String PATH = "/openapi.yaml";
++
++  private final Resource contract = new ClassPathResource("api/openapi.yaml");
++
++  /**
++   * Returns the OpenAPI contract.
++   *
++   * @return the contract as {@code application/yaml}
++   */
++  @GetMapping(PATH)
++  public ResponseEntity<Resource> contract() {
++    return ResponseEntity.ok().contentType(MediaType.APPLICATION_YAML).body(contract);
++  }
++}
+diff --git a/src/main/java/io/github/marishasahay/shortener/web/FieldViolation.java b/src/main/java/io/github/marishasahay/shortener/web/FieldViolation.java
+new file mode 100644
+index 0000000..662958e
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/web/FieldViolation.java
+@@ -0,0 +1,9 @@
++package io.github.marishasahay.shortener.web;
++
++/**
++ * One invalid request field, listed in the {@code errors} property of a 400 problem.
++ *
++ * @param field the request field name
++ * @param message why the value is invalid
++ */
++public record FieldViolation(String field, String message) {}
+diff --git a/src/main/java/io/github/marishasahay/shortener/web/ProblemDetailsAdvice.java b/src/main/java/io/github/marishasahay/shortener/web/ProblemDetailsAdvice.java
+new file mode 100644
+index 0000000..c59e0d0
+--- /dev/null
++++ b/src/main/java/io/github/marishasahay/shortener/web/ProblemDetailsAdvice.java
+@@ -0,0 +1,124 @@
++package io.github.marishasahay.shortener.web;
++
++import io.github.marishasahay.shortener.link.AliasAlreadyExistsException;
++import io.github.marishasahay.shortener.link.CodeGenerationException;
++import io.github.marishasahay.shortener.link.InvalidLinkRequestException;
++import io.github.marishasahay.shortener.link.LinkExpiredException;
++import io.github.marishasahay.shortener.link.LinkNotFoundException;
++import io.github.marishasahay.shortener.ratelimit.RateLimitExceededException;
++import java.util.Comparator;
++import java.util.List;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.HttpStatusCode;
++import org.springframework.http.ProblemDetail;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.MethodArgumentNotValidException;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.RestControllerAdvice;
++import org.springframework.web.context.request.WebRequest;
++import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
++
++/**
++ * Renders every error as an RFC 9457 {@code application/problem+json} document. Extending
++ * {@link ResponseEntityExceptionHandler} covers Spring MVC's own exceptions (malformed JSON,
++ * unsupported media type, unknown path, ...) in the same format.
++ */
++@RestControllerAdvice
++public class ProblemDetailsAdvice extends ResponseEntityExceptionHandler {
++
++  static final String ERRORS_PROPERTY = "errors";
++  static final String INVALID_REQUEST_TITLE = "Invalid request";
++
++  private static final Logger LOG = LoggerFactory.getLogger(ProblemDetailsAdvice.class);
++
++  @ExceptionHandler(LinkNotFoundException.class)
++  public ProblemDetail handleNotFound(LinkNotFoundException ex) {
++    return problem(HttpStatus.NOT_FOUND, "Link not found", ex.getMessage());
++  }
++
++  @ExceptionHandler(LinkExpiredException.class)
++  public ProblemDetail handleExpired(LinkExpiredException ex) {
++    return problem(HttpStatus.GONE, "Link expired", ex.getMessage());
++  }
++
++  @ExceptionHandler(AliasAlreadyExistsException.class)
++  public ProblemDetail handleAliasConflict(AliasAlreadyExistsException ex) {
++    return problem(HttpStatus.CONFLICT, "Alias already in use", ex.getMessage());
++  }
++
++  /**
++   * Maps business-rule violations of a create request to 400.
++   *
++   * @param ex the violation
++   * @return a problem listing the invalid field
++   */
++  @ExceptionHandler(InvalidLinkRequestException.class)
++  public ProblemDetail handleInvalidRequest(InvalidLinkRequestException ex) {
++    ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, INVALID_REQUEST_TITLE, ex.getMessage());
++    problem.setProperty(ERRORS_PROPERTY, List.of(new FieldViolation(ex.field(), ex.reason())));
++    return problem;
++  }
++
++  /**
++   * Maps an exhausted rate limit to 429 with a {@code Retry-After} header in seconds.
++   *
++   * @param ex the rejection
++   * @return the problem response
++   */
++  @ExceptionHandler(RateLimitExceededException.class)
++  public ResponseEntity<ProblemDetail> handleRateLimited(RateLimitExceededException ex) {
++    long retryAfterSeconds = ex.retryAfterSeconds();
++    ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests",
++        "Rate limit exceeded; retry after " + retryAfterSeconds + " seconds");
++    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
++        .header(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds))
++        .body(problem);
++  }
++
++  /**
++   * Maps an exhausted code-generation retry budget to 500.
++   *
++   * @param ex the failure
++   * @return the problem
++   */
++  @ExceptionHandler(CodeGenerationException.class)
++  public ProblemDetail handleCodeGeneration(CodeGenerationException ex) {
++    return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Short code generation failed",
++        ex.getMessage());
++  }
++
++  /**
++   * Last-resort handler so unexpected failures are also problem documents and leak no details.
++   *
++   * @param ex the unexpected exception
++   * @return a generic 500 problem
++   */
++  @ExceptionHandler(Exception.class)
++  public ProblemDetail handleUnexpected(Exception ex) {
++    LOG.error("Unhandled exception", ex);
++    return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
++        "An unexpected error occurred");
++  }
++
++  @Override
++  protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex,
++      HttpHeaders headers, HttpStatusCode status, WebRequest request) {
++    List<FieldViolation> violations = ex.getBindingResult().getFieldErrors().stream()
++        .map(error -> new FieldViolation(error.getField(), error.getDefaultMessage()))
++        .sorted(Comparator.comparing(FieldViolation::field))
++        .toList();
++    ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, INVALID_REQUEST_TITLE,
++        "Request validation failed");
++    problem.setProperty(ERRORS_PROPERTY, violations);
++    return handleExceptionInternal(ex, problem, headers, status, request);
++  }
++
++  private static ProblemDetail problem(HttpStatus status, String title, String detail) {
++    ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
++    problem.setTitle(title);
++    return problem;
++  }
++}
+diff --git a/src/main/resources/application.yml b/src/main/resources/application.yml
+index c03cde5..fe263a4 100644
+--- a/src/main/resources/application.yml
++++ b/src/main/resources/application.yml
+@@ -11,8 +11,38 @@ spring:
+ server:
+   port: 8080
+ 
++shortener:
++  base-url: http://localhost:8080
++  code-length: 7
++  redirect-cache:
++    ttl: 10m
++    max-size: 10000
++  rate-limit:
++    requests-per-period: 20
++    period: 1m
++    max-tracked-clients: 100000
++  trust-forwarded-headers: false
++
++# Swagger UI at /swagger-ui.html, showing the hand-written contract instead of a spec generated
++# from the code, so the UI and the API compatibility gate see the same document. The generated
++# /v3/api-docs endpoint is switched off; springdoc.api-docs.enabled must stay on for the UI.
++springdoc:
++  enable-default-api-docs: false
++  swagger-ui:
++    url: /openapi.yaml
++    try-it-out-enabled: true
++    display-request-duration: true
++
+ management:
+   endpoints:
+     web:
+       exposure:
+         include: health,info,metrics
++  info:
++    env:
++      enabled: true
++
++info:
++  app:
++    name: url-shortener
++    description: URL shortener service (v1 baseline)
+diff --git a/src/main/resources/db/migration/V1__create_links.sql b/src/main/resources/db/migration/V1__create_links.sql
+new file mode 100644
+index 0000000..aae44ab
+--- /dev/null
++++ b/src/main/resources/db/migration/V1__create_links.sql
+@@ -0,0 +1,13 @@
++-- Short links. Rows are never physically deleted: deleted_at marks a soft delete so a code is
++-- never handed out again. The unique constraint on code is what guarantees uniqueness of both
++-- generated codes and custom aliases (inserts use ON CONFLICT (code) DO NOTHING).
++create table links (
++    id          bigint generated always as identity primary key,
++    code        varchar(32)   not null,
++    target_url  varchar(2048) not null,
++    created_at  timestamptz   not null,
++    expires_at  timestamptz,
++    deleted_at  timestamptz,
++    constraint uq_links_code unique (code),
++    constraint ck_links_expiry_after_creation check (expires_at is null or expires_at > created_at)
++);
+diff --git a/src/test/java/io/github/marishasahay/shortener/ActuatorIT.java b/src/test/java/io/github/marishasahay/shortener/ActuatorIT.java
+new file mode 100644
+index 0000000..de65b85
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ActuatorIT.java
+@@ -0,0 +1,21 @@
++package io.github.marishasahay.shortener;
++
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++
++/**
++ * Actuator checks that need the real database; routing, metrics and info are covered without
++ * Docker by {@link ApplicationWiringTest}.
++ */
++class ActuatorIT extends IntegrationTestSupport {
++
++  @Test
++  void shouldReportHealthUpWithDatabaseAndMigrationsInPlace() throws Exception {
++    mockMvc.perform(get("/actuator/health"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.status").value("UP"));
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java b/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java
+new file mode 100644
+index 0000000..74e866e
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ApplicationWiringTest.java
+@@ -0,0 +1,121 @@
++package io.github.marishasahay.shortener;
++
++import static org.hamcrest.Matchers.containsString;
++import static org.hamcrest.Matchers.endsWith;
++import static org.hamcrest.Matchers.matchesPattern;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.link.Link;
++import io.github.marishasahay.shortener.link.LinkRepository;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.time.Instant;
++import java.util.Optional;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.http.MediaType;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.web.servlet.MockMvc;
++
++/**
++ * Boots the complete application except the database (DataSource and Flyway auto-configuration
++ * excluded, repository mocked), so the real wiring of configuration, cache, rate limiter and
++ * actuator is verified in the fast suite without Docker.
++ */
++@SpringBootTest(properties = "spring.autoconfigure.exclude="
++    + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
++    + "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration")
++@AutoConfigureMockMvc
++class ApplicationWiringTest {
++
++  private static final String TARGET = "https://example.com/wired";
++
++  @Autowired
++  private MockMvc mockMvc;
++
++  @MockitoBean
++  private LinkRepository repository;
++
++  @Test
++  void shouldCreateLinkWithConfiguredCodeGenerator() throws Exception {
++    when(repository.insertIfAbsent(anyString(), eq(TARGET), any(), any()))
++        .thenAnswer(call -> Optional.of(new Link(1L, call.getArgument(0), TARGET,
++            call.getArgument(2), call.getArgument(3))));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\"}"))
++        .andExpect(status().isCreated())
++        .andExpect(jsonPath("$.code").value(matchesPattern("^[0-9A-Za-z]{7}$")));
++  }
++
++  @Test
++  void shouldRedirectThroughTheRealResolverAndCache() throws Exception {
++    when(repository.findActiveByCode("wired01")).thenReturn(Optional.of(
++        new Link(1L, "wired01", TARGET, Instant.parse("2026-01-01T00:00:00Z"), null)));
++
++    mockMvc.perform(get("/wired01")).andExpect(status().isFound())
++        .andExpect(header().string("Location", TARGET));
++    mockMvc.perform(get("/wired01")).andExpect(status().isFound());
++
++    verify(repository, times(1)).findActiveByCode("wired01");
++  }
++
++  @Test
++  void shouldServeSwaggerUiConfiguredWithTheCheckedInContract() throws Exception {
++    mockMvc.perform(get("/swagger-ui.html"))
++        .andExpect(status().isFound())
++        .andExpect(header().string("Location", endsWith("/swagger-ui/index.html")));
++    mockMvc.perform(get("/swagger-ui/index.html"))
++        .andExpect(status().isOk())
++        .andExpect(content().string(containsString("swagger-ui")));
++    mockMvc.perform(get("/v3/api-docs/swagger-config"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.url").value("/openapi.yaml"));
++  }
++
++  @Test
++  void shouldServeTheApiContractUnchangedAndGenerateNoSpecFromCode() throws Exception {
++    String contract = Files.readString(Path.of("api/openapi.yaml"));
++
++    mockMvc.perform(get("/openapi.yaml"))
++        .andExpect(status().isOk())
++        .andExpect(content().contentType("application/yaml"))
++        .andExpect(content().string(contract));
++    mockMvc.perform(get("/v3/api-docs")).andExpect(status().isNotFound());
++  }
++
++  @Test
++  void shouldServeActuatorRootDespiteMatchingTheRedirectPattern() throws Exception {
++    mockMvc.perform(get("/actuator"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$._links.health").exists());
++  }
++
++  @Test
++  void shouldExposeRedirectCacheMetrics() throws Exception {
++    mockMvc.perform(get("/actuator/metrics/cache.gets").param("tag", "cache:redirects"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.name").value("cache.gets"));
++  }
++
++  @Test
++  void shouldExposeApplicationAndBuildInfo() throws Exception {
++    mockMvc.perform(get("/actuator/info"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.app.name").value("url-shortener"))
++        .andExpect(jsonPath("$.build.artifact").value("url-shortener"));
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java b/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
+index fd99ffd..83589d3 100644
+--- a/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
++++ b/src/test/java/io/github/marishasahay/shortener/IntegrationTestSupport.java
+@@ -1,21 +1,44 @@
+ package io.github.marishasahay.shortener;
+ 
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++
++import com.jayway.jsonpath.JsonPath;
++import io.github.marishasahay.shortener.support.MutableClock;
++import java.time.Instant;
++import java.util.concurrent.atomic.AtomicInteger;
++import org.junit.jupiter.api.BeforeEach;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.TestConfiguration;
+ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Import;
++import org.springframework.context.annotation.Primary;
++import org.springframework.http.MediaType;
+ import org.springframework.test.context.DynamicPropertyRegistry;
+ import org.springframework.test.context.DynamicPropertySource;
+ import org.springframework.test.web.servlet.MockMvc;
++import org.springframework.test.web.servlet.MvcResult;
++import org.springframework.test.web.servlet.ResultActions;
++import org.springframework.test.web.servlet.request.RequestPostProcessor;
+ import org.testcontainers.postgresql.PostgreSQLContainer;
+ 
+ /**
+- * Base class for integration tests (*IT): the full application against a real PostgreSQL in a
+- * JVM-wide singleton container, so every IT class shares one container and one Spring context.
++ * Base class for integration tests: the full application against a real PostgreSQL.
++ *
++ * <p>The container is a JVM-wide singleton (started once in a static initializer, stopped by
++ * Testcontainers' reaper at JVM exit) and every subclass uses the same context configuration,
++ * so all integration test classes share one container and one cached Spring context. Because
++ * state is shared, tests must not assume an empty table: they use unique aliases or generated
++ * codes, and each test gets its own client address so rate-limit buckets never interfere.
+  */
+ @SpringBootTest
+ @AutoConfigureMockMvc
++@Import(IntegrationTestSupport.TestClockConfiguration.class)
+ public abstract class IntegrationTestSupport {
+ 
++  protected static final Instant START = Instant.parse("2026-01-01T00:00:00Z");
++
+   /**
+    * Set by a sandboxed build gate, which has no Docker inside: use the database it provides
+    * instead of starting a container.
+@@ -25,6 +48,8 @@ public abstract class IntegrationTestSupport {
+   static final PostgreSQLContainer POSTGRES =
+       EXTERNAL_DATABASE == null ? new PostgreSQLContainer("postgres:17-alpine") : null;
+ 
++  private static final AtomicInteger CLIENT_SEQUENCE = new AtomicInteger();
++
+   static {
+     if (POSTGRES != null) {
+       POSTGRES.start();
+@@ -46,4 +71,46 @@ public abstract class IntegrationTestSupport {
+ 
+   @Autowired
+   protected MockMvc mockMvc;
++
++  @Autowired
++  protected MutableClock clock;
++
++  protected String clientAddress;
++
++  @BeforeEach
++  void resetClockAndClient() {
++    clock.setInstant(START);
++    int n = CLIENT_SEQUENCE.incrementAndGet();
++    clientAddress = "10.%d.%d.%d".formatted((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
++  }
++
++  /** Sends {@code POST /api/v1/links} from this test's client address. */
++  protected ResultActions postLink(String json) throws Exception {
++    return mockMvc.perform(post("/api/v1/links")
++        .contentType(MediaType.APPLICATION_JSON)
++        .content(json)
++        .with(fromAddress(clientAddress)));
++  }
++
++  protected static RequestPostProcessor fromAddress(String address) {
++    return request -> {
++      request.setRemoteAddr(address);
++      return request;
++    };
++  }
++
++  protected static String jsonField(MvcResult result, String path) throws Exception {
++    return JsonPath.read(result.getResponse().getContentAsString(), path);
++  }
++
++  /** Replaces the system clock with a controllable one for the whole context. */
++  @TestConfiguration(proxyBeanMethods = false)
++  static class TestClockConfiguration {
++
++    @Bean
++    @Primary
++    MutableClock testClock() {
++      return new MutableClock(START);
++    }
++  }
+ }
+diff --git a/src/test/java/io/github/marishasahay/shortener/config/ShortenerPropertiesTest.java b/src/test/java/io/github/marishasahay/shortener/config/ShortenerPropertiesTest.java
+new file mode 100644
+index 0000000..5957324
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/config/ShortenerPropertiesTest.java
+@@ -0,0 +1,58 @@
++package io.github.marishasahay.shortener.config;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.net.URI;
++import java.time.Duration;
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
++import org.springframework.boot.test.context.runner.ApplicationContextRunner;
++import org.springframework.context.annotation.Configuration;
++
++class ShortenerPropertiesTest {
++
++  private final ApplicationContextRunner runner = new ApplicationContextRunner()
++      .withUserConfiguration(PropertiesConfiguration.class);
++
++  @Test
++  void shouldApplyDocumentedDefaults() {
++    runner.run(context -> {
++      ShortenerProperties properties = context.getBean(ShortenerProperties.class);
++      assertThat(properties.baseUrl()).isEqualTo(URI.create("http://localhost:8080"));
++      assertThat(properties.codeLength()).isEqualTo(7);
++      assertThat(properties.redirectCache().ttl()).isEqualTo(Duration.ofMinutes(10));
++      assertThat(properties.redirectCache().maxSize()).isEqualTo(10_000);
++      assertThat(properties.rateLimit().requestsPerPeriod()).isEqualTo(20);
++      assertThat(properties.rateLimit().period()).isEqualTo(Duration.ofMinutes(1));
++      assertThat(properties.rateLimit().maxTrackedClients()).isEqualTo(100_000);
++      assertThat(properties.trustForwardedHeaders()).isFalse();
++    });
++  }
++
++  @Test
++  void shouldBindOverrides() {
++    runner.withPropertyValues("shortener.base-url=https://sho.rt", "shortener.code-length=9",
++            "shortener.redirect-cache.ttl=30s", "shortener.rate-limit.requests-per-period=5",
++            "shortener.trust-forwarded-headers=true")
++        .run(context -> {
++          ShortenerProperties properties = context.getBean(ShortenerProperties.class);
++          assertThat(properties.baseUrl().getHost()).isEqualTo("sho.rt");
++          assertThat(properties.codeLength()).isEqualTo(9);
++          assertThat(properties.redirectCache().ttl()).isEqualTo(Duration.ofSeconds(30));
++          assertThat(properties.rateLimit().requestsPerPeriod()).isEqualTo(5);
++          assertThat(properties.trustForwardedHeaders()).isTrue();
++        });
++  }
++
++  @Test
++  void shouldFailFastOnInvalidValues() {
++    runner.withPropertyValues("shortener.code-length=3")
++        .run(context -> assertThat(context).hasFailed());
++    runner.withPropertyValues("shortener.rate-limit.requests-per-period=0")
++        .run(context -> assertThat(context).hasFailed());
++  }
++
++  @Configuration(proxyBeanMethods = false)
++  @EnableConfigurationProperties(ShortenerProperties.class)
++  static class PropertiesConfiguration {}
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/AliasPolicyTest.java b/src/test/java/io/github/marishasahay/shortener/link/AliasPolicyTest.java
+new file mode 100644
+index 0000000..874fd59
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/AliasPolicyTest.java
+@@ -0,0 +1,38 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThatCode;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.NullAndEmptySource;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class AliasPolicyTest {
++
++  private final AliasPolicy policy = new AliasPolicy();
++
++  @ParameterizedTest
++  @ValueSource(strings = {"abcd", "my-link", "My_Link_2026", "a-b_c-d",
++      "abcdefghijklmnopqrstuvwxyz012345"})
++  void shouldAcceptWellFormedAliases(String alias) {
++    assertThatCode(() -> policy.validate(alias)).doesNotThrowAnyException();
++  }
++
++  @ParameterizedTest
++  @NullAndEmptySource
++  @ValueSource(strings = {"abc", "abcdefghijklmnopqrstuvwxyz0123456", "has space", "dot.ted",
++      "slash/es", "query?x", "percent%20", "ümlaut"})
++  void shouldRejectMalformedAliases(String alias) {
++    assertThatThrownBy(() -> policy.validate(alias))
++        .isInstanceOf(InvalidLinkRequestException.class)
++        .hasMessage("customAlias must be 4-32 characters of letters, digits, '_' or '-'");
++  }
++
++  @ParameterizedTest
++  @ValueSource(strings = {"admin", "ADMIN", "actuator", "health", "static", "Metrics", "login"})
++  void shouldRejectReservedWordsCaseInsensitively(String alias) {
++    assertThatThrownBy(() -> policy.validate(alias))
++        .isInstanceOf(InvalidLinkRequestException.class)
++        .hasMessage("customAlias is a reserved word");
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkLifecycleIT.java b/src/test/java/io/github/marishasahay/shortener/link/LinkLifecycleIT.java
+new file mode 100644
+index 0000000..a537e29
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkLifecycleIT.java
+@@ -0,0 +1,144 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.hamcrest.Matchers.matchesPattern;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.IntegrationTestSupport;
++import java.time.Duration;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.springframework.http.MediaType;
++import org.springframework.test.web.servlet.MvcResult;
++
++class LinkLifecycleIT extends IntegrationTestSupport {
++
++  private static final String TARGET = "https://example.com/docs?page=1";
++
++  @Test
++  void shouldCreateLinkWithGeneratedCodeAndRedirectWith302() throws Exception {
++    MvcResult created = postLink("{\"url\": \"" + TARGET + "\"}")
++        .andExpect(status().isCreated())
++        .andExpect(jsonPath("$.code").value(matchesPattern("^[0-9A-Za-z]{7}$")))
++        .andExpect(jsonPath("$.targetUrl").value(TARGET))
++        .andExpect(jsonPath("$.createdAt").value("2026-01-01T00:00:00Z"))
++        .andExpect(jsonPath("$.expiresAt").isEmpty())
++        .andReturn();
++    String code = jsonField(created, "$.code");
++
++    assertThat(created.getResponse().getHeader("Location"))
++        .isEqualTo("http://localhost:8080/api/v1/links/" + code);
++    assertThat(jsonField(created, "$.shortUrl")).isEqualTo("http://localhost:8080/" + code);
++
++    mockMvc.perform(get("/" + code))
++        .andExpect(status().isFound())
++        .andExpect(header().string("Location", TARGET))
++        .andExpect(header().string("Cache-Control", "no-store"));
++  }
++
++  @Test
++  void shouldReturnMetadataForCustomAliasWithExpiry() throws Exception {
++    String alias = uniqueAlias();
++    postLink("""
++        {"url": "%s", "customAlias": "%s", "expiresAt": "2026-06-30T12:00:00Z"}
++        """.formatted(TARGET, alias))
++        .andExpect(status().isCreated())
++        .andExpect(jsonPath("$.code").value(alias));
++
++    mockMvc.perform(get("/api/v1/links/" + alias))
++        .andExpect(status().isOk())
++        .andExpect(content().contentType(MediaType.APPLICATION_JSON))
++        .andExpect(jsonPath("$.code").value(alias))
++        .andExpect(jsonPath("$.shortUrl").value("http://localhost:8080/" + alias))
++        .andExpect(jsonPath("$.targetUrl").value(TARGET))
++        .andExpect(jsonPath("$.createdAt").value("2026-01-01T00:00:00Z"))
++        .andExpect(jsonPath("$.expiresAt").value("2026-06-30T12:00:00Z"));
++  }
++
++  @Test
++  void shouldRejectInvalidUrlWith400ProblemDetail() throws Exception {
++    postLink("{\"url\": \"https://bank.com@evil.com/login\"}")
++        .andExpect(status().isBadRequest())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.status").value(400))
++        .andExpect(jsonPath("$.title").value("Invalid request"))
++        .andExpect(jsonPath("$.detail").value("url must not contain user info"))
++        .andExpect(jsonPath("$.errors[0].field").value("url"));
++  }
++
++  @Test
++  void shouldRejectExpiryInThePastWith400() throws Exception {
++    postLink("{\"url\": \"" + TARGET + "\", \"expiresAt\": \"2025-12-31T23:59:59Z\"}")
++        .andExpect(status().isBadRequest())
++        .andExpect(jsonPath("$.errors[0].field").value("expiresAt"));
++  }
++
++  @Test
++  void shouldRejectDuplicateAliasWith409() throws Exception {
++    String alias = uniqueAlias();
++    String body = "{\"url\": \"" + TARGET + "\", \"customAlias\": \"" + alias + "\"}";
++    postLink(body).andExpect(status().isCreated());
++
++    postLink(body)
++        .andExpect(status().isConflict())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Alias already in use"));
++  }
++
++  @Test
++  void shouldReturn410GoneOnceLinkHasExpired() throws Exception {
++    String alias = uniqueAlias();
++    postLink("""
++        {"url": "%s", "customAlias": "%s", "expiresAt": "2026-01-01T01:00:00Z"}
++        """.formatted(TARGET, alias))
++        .andExpect(status().isCreated());
++
++    clock.advance(Duration.ofHours(2));
++
++    mockMvc.perform(get("/" + alias))
++        .andExpect(status().isGone())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Link expired"));
++    mockMvc.perform(get("/api/v1/links/" + alias))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.expiresAt").value("2026-01-01T01:00:00Z"));
++  }
++
++  @Test
++  void shouldReturn404ForUnknownCode() throws Exception {
++    mockMvc.perform(get("/unknown-" + shortId()))
++        .andExpect(status().isNotFound())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Link not found"));
++    mockMvc.perform(get("/api/v1/links/unknown-" + shortId()))
++        .andExpect(status().isNotFound());
++  }
++
++  @Test
++  void shouldSoftDeleteLinkThenReturn404AndNeverReuseTheCode() throws Exception {
++    String alias = uniqueAlias();
++    String body = "{\"url\": \"" + TARGET + "\", \"customAlias\": \"" + alias + "\"}";
++    postLink(body).andExpect(status().isCreated());
++    mockMvc.perform(get("/" + alias)).andExpect(status().isFound());
++
++    mockMvc.perform(delete("/api/v1/links/" + alias)).andExpect(status().isNoContent());
++
++    mockMvc.perform(get("/" + alias)).andExpect(status().isNotFound());
++    mockMvc.perform(get("/api/v1/links/" + alias)).andExpect(status().isNotFound());
++    mockMvc.perform(delete("/api/v1/links/" + alias)).andExpect(status().isNotFound());
++    postLink(body).andExpect(status().isConflict());
++  }
++
++  private static String uniqueAlias() {
++    return "it-" + shortId();
++  }
++
++  private static String shortId() {
++    return UUID.randomUUID().toString().substring(0, 8);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkRepositoryIT.java b/src/test/java/io/github/marishasahay/shortener/link/LinkRepositoryIT.java
+new file mode 100644
+index 0000000..d3fb372
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkRepositoryIT.java
+@@ -0,0 +1,70 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import io.github.marishasahay.shortener.IntegrationTestSupport;
++import java.time.Instant;
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++
++class LinkRepositoryIT extends IntegrationTestSupport {
++
++  private static final Instant CREATED = Instant.parse("2026-03-01T10:15:30.123456Z");
++  private static final Instant EXPIRES = Instant.parse("2026-04-01T00:00:00Z");
++
++  @Autowired
++  private LinkRepository repository;
++
++  @Test
++  void shouldInsertAndReadBackLinkWithTimestamps() {
++    String code = uniqueCode();
++
++    Link inserted = repository.insertIfAbsent(code, "https://example.com", CREATED, EXPIRES)
++        .orElseThrow();
++
++    assertThat(inserted.id()).isPositive();
++    assertThat(repository.findActiveByCode(code)).contains(inserted);
++  }
++
++  @Test
++  void shouldStoreNullExpiry() {
++    String code = uniqueCode();
++    repository.insertIfAbsent(code, "https://example.com", CREATED, null);
++
++    assertThat(repository.findActiveByCode(code)).hasValueSatisfying(
++        link -> assertThat(link.expiresAt()).isNull());
++  }
++
++  @Test
++  void shouldReturnEmptyInsteadOfFailingWhenCodeExists() {
++    String code = uniqueCode();
++    repository.insertIfAbsent(code, "https://example.com/first", CREATED, null);
++
++    assertThat(repository.insertIfAbsent(code, "https://example.com/second", CREATED, null))
++        .isEmpty();
++    assertThat(repository.findActiveByCode(code)).hasValueSatisfying(
++        link -> assertThat(link.targetUrl()).isEqualTo("https://example.com/first"));
++  }
++
++  @Test
++  void shouldHideSoftDeletedLinksButKeepTheirCodeReserved() {
++    String code = uniqueCode();
++    repository.insertIfAbsent(code, "https://example.com", CREATED, null);
++
++    assertThat(repository.softDelete(code, CREATED.plusSeconds(60))).isTrue();
++
++    assertThat(repository.findActiveByCode(code)).isEmpty();
++    assertThat(repository.softDelete(code, CREATED.plusSeconds(120))).isFalse();
++    assertThat(repository.insertIfAbsent(code, "https://example.com", CREATED, null)).isEmpty();
++  }
++
++  @Test
++  void shouldReportNothingDeletedForUnknownCode() {
++    assertThat(repository.softDelete(uniqueCode(), CREATED)).isFalse();
++  }
++
++  private static String uniqueCode() {
++    return "r" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+new file mode 100644
+index 0000000..3f28c0c
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkResolverTest.java
+@@ -0,0 +1,86 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import com.github.benmanes.caffeine.cache.Caffeine;
++import io.github.marishasahay.shortener.support.MutableClock;
++import java.time.Instant;
++import java.util.Optional;
++import org.junit.jupiter.api.Test;
++
++class LinkResolverTest {
++
++  private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
++  private static final String TARGET = "https://example.com/";
++
++  private final LinkRepository repository = mock(LinkRepository.class);
++  private final MutableClock clock = new MutableClock(NOW);
++  private final LinkResolver resolver =
++      new LinkResolver(Caffeine.newBuilder().build(), repository, clock);
++
++  @Test
++  void shouldLoadTargetFromRepositoryOnCacheMiss() {
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(null)));
++
++    assertThat(resolver.resolve("abcdefg")).isEqualTo(TARGET);
++  }
++
++  @Test
++  void shouldServeRepeatedLookupsFromCache() {
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(null)));
++
++    resolver.resolve("abcdefg");
++    resolver.resolve("abcdefg");
++
++    verify(repository, times(1)).findActiveByCode("abcdefg");
++  }
++
++  @Test
++  void shouldThrowNotFoundAndNotCacheUnknownCodes() {
++    when(repository.findActiveByCode("missing")).thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> resolver.resolve("missing"))
++        .isInstanceOf(LinkNotFoundException.class);
++    assertThatThrownBy(() -> resolver.resolve("missing"))
++        .isInstanceOf(LinkNotFoundException.class);
++    verify(repository, times(2)).findActiveByCode("missing");
++  }
++
++  @Test
++  void shouldThrowGoneWhenLinkLoadedFromDatabaseHasExpired() {
++    when(repository.findActiveByCode("abcdefg"))
++        .thenReturn(Optional.of(link(NOW.minusSeconds(1))));
++
++    assertThatThrownBy(() -> resolver.resolve("abcdefg"))
++        .isInstanceOf(LinkExpiredException.class);
++  }
++
++  @Test
++  void shouldTreatExpiryInstantItselfAsExpired() {
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(NOW)));
++
++    assertThatThrownBy(() -> resolver.resolve("abcdefg"))
++        .isInstanceOf(LinkExpiredException.class);
++  }
++
++  @Test
++  void shouldReloadFromRepositoryAfterEviction() {
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link(null)));
++    resolver.resolve("abcdefg");
++
++    resolver.evict("abcdefg");
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> resolver.resolve("abcdefg"))
++        .isInstanceOf(LinkNotFoundException.class);
++  }
++
++  private static Link link(Instant expiresAt) {
++    return new Link(1L, "abcdefg", TARGET, NOW.minusSeconds(3600), expiresAt);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkServiceTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkServiceTest.java
+new file mode 100644
+index 0000000..f82d73f
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkServiceTest.java
+@@ -0,0 +1,171 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import java.util.Optional;
++import org.junit.jupiter.api.Test;
++
++class LinkServiceTest {
++
++  private static final Instant NOW = Instant.parse("2026-01-01T12:00:00.123456789Z");
++  private static final Instant NOW_MICROS = Instant.parse("2026-01-01T12:00:00.123456Z");
++  private static final String TARGET = "https://example.com/page";
++
++  private final LinkRepository repository = mock(LinkRepository.class);
++  private final CodeGenerator codeGenerator = mock(CodeGenerator.class);
++  private final LinkResolver linkResolver = mock(LinkResolver.class);
++  private final LinkService service = new LinkService(repository, codeGenerator,
++      new TargetUrlPolicy("sho.rt"), new AliasPolicy(), linkResolver,
++      Clock.fixed(NOW, ZoneOffset.UTC));
++
++  @Test
++  void shouldCreateLinkWithGeneratedCode() {
++    when(codeGenerator.generate()).thenReturn("aB3dE5g");
++    when(repository.insertIfAbsent("aB3dE5g", TARGET, NOW_MICROS, null))
++        .thenReturn(Optional.of(link("aB3dE5g", null)));
++
++    Link created = service.create(TARGET, null, null);
++
++    assertThat(created.code()).isEqualTo("aB3dE5g");
++    assertThat(created.targetUrl()).isEqualTo(TARGET);
++  }
++
++  @Test
++  void shouldRetryWithNewCodeWhenGeneratedCodeCollides() {
++    when(codeGenerator.generate()).thenReturn("taken01", "taken02", "free003");
++    when(repository.insertIfAbsent(eq("taken01"), any(), any(), any()))
++        .thenReturn(Optional.empty());
++    when(repository.insertIfAbsent(eq("taken02"), any(), any(), any()))
++        .thenReturn(Optional.empty());
++    when(repository.insertIfAbsent(eq("free003"), any(), any(), any()))
++        .thenReturn(Optional.of(link("free003", null)));
++
++    Link created = service.create(TARGET, null, null);
++
++    assertThat(created.code()).isEqualTo("free003");
++    verify(codeGenerator, times(3)).generate();
++  }
++
++  @Test
++  void shouldFailWithClearErrorAfterFiveCollisions() {
++    when(codeGenerator.generate()).thenReturn("collide");
++    when(repository.insertIfAbsent(anyString(), any(), any(), any()))
++        .thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> service.create(TARGET, null, null))
++        .isInstanceOf(CodeGenerationException.class)
++        .hasMessage("Could not generate a unique short code after 5 attempts");
++    verify(repository, times(LinkService.MAX_CODE_ATTEMPTS))
++        .insertIfAbsent(anyString(), any(), any(), any());
++  }
++
++  @Test
++  void shouldUseCustomAliasAsCodeWithoutGenerating() {
++    when(repository.insertIfAbsent("my-alias", TARGET, NOW_MICROS, null))
++        .thenReturn(Optional.of(link("my-alias", null)));
++
++    Link created = service.create(TARGET, "my-alias", null);
++
++    assertThat(created.code()).isEqualTo("my-alias");
++    verifyNoInteractions(codeGenerator);
++  }
++
++  @Test
++  void shouldRejectCustomAliasThatIsAlreadyTakenWithoutRetrying() {
++    when(repository.insertIfAbsent(eq("my-alias"), any(), any(), any()))
++        .thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> service.create(TARGET, "my-alias", null))
++        .isInstanceOf(AliasAlreadyExistsException.class)
++        .hasMessageContaining("my-alias");
++    verify(repository, times(1)).insertIfAbsent(anyString(), any(), any(), any());
++    verifyNoInteractions(codeGenerator);
++  }
++
++  @Test
++  void shouldRejectInvalidAliasBeforeTouchingTheDatabase() {
++    assertThatThrownBy(() -> service.create(TARGET, "api", null))
++        .isInstanceOf(InvalidLinkRequestException.class);
++    verifyNoInteractions(repository);
++  }
++
++  @Test
++  void shouldRejectInvalidTargetUrlBeforeTouchingTheDatabase() {
++    assertThatThrownBy(() -> service.create("https://sho.rt/abc1234", null, null))
++        .isInstanceOf(InvalidLinkRequestException.class)
++        .hasMessage("url must not point at this shortener");
++    verifyNoInteractions(repository);
++  }
++
++  @Test
++  void shouldRejectExpiryThatIsNotInTheFuture() {
++    assertThatThrownBy(() -> service.create(TARGET, null, NOW.minusSeconds(1)))
++        .isInstanceOfSatisfying(InvalidLinkRequestException.class,
++            ex -> assertThat(ex.field()).isEqualTo("expiresAt"));
++    assertThatThrownBy(() -> service.create(TARGET, null, NOW))
++        .isInstanceOf(InvalidLinkRequestException.class);
++    verifyNoInteractions(repository);
++  }
++
++  @Test
++  void shouldStoreTimestampsAtDatabasePrecision() {
++    Instant expiry = NOW.plus(Duration.ofDays(1));
++    Instant expiryMicros = NOW_MICROS.plus(Duration.ofDays(1));
++    when(codeGenerator.generate()).thenReturn("abcdefg");
++    when(repository.insertIfAbsent("abcdefg", TARGET, NOW_MICROS, expiryMicros))
++        .thenReturn(Optional.of(link("abcdefg", expiryMicros)));
++
++    Link created = service.create(TARGET, null, expiry);
++
++    assertThat(created.createdAt()).isEqualTo(NOW_MICROS);
++    assertThat(created.expiresAt()).isEqualTo(expiryMicros);
++  }
++
++  @Test
++  void shouldReturnActiveLinkMetadata() {
++    when(repository.findActiveByCode("abcdefg")).thenReturn(Optional.of(link("abcdefg", null)));
++
++    assertThat(service.get("abcdefg").targetUrl()).isEqualTo(TARGET);
++  }
++
++  @Test
++  void shouldThrowNotFoundForUnknownCode() {
++    when(repository.findActiveByCode("missing")).thenReturn(Optional.empty());
++
++    assertThatThrownBy(() -> service.get("missing")).isInstanceOf(LinkNotFoundException.class);
++  }
++
++  @Test
++  void shouldSoftDeleteAndEvictFromRedirectCache() {
++    when(repository.softDelete("abcdefg", NOW_MICROS)).thenReturn(true);
++
++    service.delete("abcdefg");
++
++    verify(repository).softDelete("abcdefg", NOW_MICROS);
++    verify(linkResolver).evict("abcdefg");
++  }
++
++  @Test
++  void shouldThrowNotFoundWhenDeletingUnknownOrAlreadyDeletedLink() {
++    when(repository.softDelete(eq("missing"), any())).thenReturn(false);
++
++    assertThatThrownBy(() -> service.delete("missing")).isInstanceOf(LinkNotFoundException.class);
++  }
++
++  private static Link link(String code, Instant expiresAt) {
++    return new Link(1L, code, TARGET, NOW_MICROS, expiresAt);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java b/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java
+new file mode 100644
+index 0000000..b45820b
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/LinkWebLayerTest.java
+@@ -0,0 +1,285 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.hamcrest.Matchers.hasSize;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.ArgumentMatchers.isNull;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.ratelimit.RateLimitDecision;
++import io.github.marishasahay.shortener.ratelimit.RateLimiter;
++import java.time.Duration;
++import java.time.Instant;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
++import org.springframework.boot.test.context.TestConfiguration;
++import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
++import org.springframework.http.MediaType;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.web.servlet.MockMvc;
++
++/**
++ * Web-layer tests (no database): routing, status codes, headers, JSON shape and the
++ * {@code ProblemDetail} mapping of every error.
++ */
++@WebMvcTest(controllers = {LinkApiController.class, RedirectController.class})
++class LinkWebLayerTest {
++
++  private static final Instant CREATED = Instant.parse("2026-01-01T00:00:00Z");
++  private static final String TARGET = "https://example.com/page";
++
++  @Autowired
++  private MockMvc mockMvc;
++
++  @MockitoBean
++  private LinkService linkService;
++
++  @MockitoBean
++  private LinkResolver linkResolver;
++
++  @MockitoBean
++  private RateLimiter rateLimiter;
++
++  @BeforeEach
++  void allowAllRequests() {
++    when(rateLimiter.tryAcquire(anyString()))
++        .thenReturn(new RateLimitDecision(true, Duration.ZERO));
++  }
++
++  @Test
++  void shouldCreateLinkAndReturn201WithLocationAndBody() throws Exception {
++    Instant expiry = Instant.parse("2026-02-01T00:00:00Z");
++    when(linkService.create(TARGET, "my-alias", expiry))
++        .thenReturn(new Link(1L, "my-alias", TARGET, CREATED, expiry));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("""
++                {"url": "%s", "customAlias": "my-alias", "expiresAt": "2026-02-01T00:00:00Z"}
++                """.formatted(TARGET)))
++        .andExpect(status().isCreated())
++        .andExpect(header().string("Location", "http://localhost:8080/api/v1/links/my-alias"))
++        .andExpect(content().contentType(MediaType.APPLICATION_JSON))
++        .andExpect(jsonPath("$.code").value("my-alias"))
++        .andExpect(jsonPath("$.shortUrl").value("http://localhost:8080/my-alias"))
++        .andExpect(jsonPath("$.targetUrl").value(TARGET))
++        .andExpect(jsonPath("$.createdAt").value("2026-01-01T00:00:00Z"))
++        .andExpect(jsonPath("$.expiresAt").value("2026-02-01T00:00:00Z"));
++  }
++
++  @Test
++  void shouldRenderMissingExpiryAsNull() throws Exception {
++    when(linkService.create(TARGET, null, null))
++        .thenReturn(new Link(1L, "abcdefg", TARGET, CREATED, null));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\"}"))
++        .andExpect(status().isCreated())
++        .andExpect(jsonPath("$.expiresAt").isEmpty());
++  }
++
++  @Test
++  void shouldReturn400ProblemWithFieldErrorsWhenUrlIsMissing() throws Exception {
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"customAlias\": \"my-alias\"}"))
++        .andExpect(status().isBadRequest())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.status").value(400))
++        .andExpect(jsonPath("$.title").value("Invalid request"))
++        .andExpect(jsonPath("$.instance").value("/api/v1/links"))
++        .andExpect(jsonPath("$.errors", hasSize(1)))
++        .andExpect(jsonPath("$.errors[0].field").value("url"))
++        .andExpect(jsonPath("$.errors[0].message").value("must not be blank"));
++    verifyNoInteractions(linkService);
++  }
++
++  @Test
++  void shouldReturn400ProblemForPolicyViolations() throws Exception {
++    when(linkService.create(eq("ftp://example.com"), isNull(), isNull()))
++        .thenThrow(new InvalidLinkRequestException("url", "must be an absolute http or https URL"));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"ftp://example.com\"}"))
++        .andExpect(status().isBadRequest())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.detail").value("url must be an absolute http or https URL"))
++        .andExpect(jsonPath("$.errors[0].field").value("url"))
++        .andExpect(jsonPath("$.errors[0].message").value("must be an absolute http or https URL"));
++  }
++
++  @Test
++  void shouldReturn400ProblemForMalformedJson() throws Exception {
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": "))
++        .andExpect(status().isBadRequest())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.status").value(400));
++  }
++
++  @Test
++  void shouldReturn400ProblemForUnparseableExpiry() throws Exception {
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\", \"expiresAt\": \"tomorrow\"}"))
++        .andExpect(status().isBadRequest())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
++  }
++
++  @Test
++  void shouldReturn415ProblemForNonJsonBody() throws Exception {
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.TEXT_PLAIN).content(TARGET))
++        .andExpect(status().isUnsupportedMediaType())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
++  }
++
++  @Test
++  void shouldReturn409ProblemWhenAliasIsTaken() throws Exception {
++    when(linkService.create(any(), eq("taken"), any()))
++        .thenThrow(new AliasAlreadyExistsException("taken"));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\", \"customAlias\": \"taken\"}"))
++        .andExpect(status().isConflict())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Alias already in use"));
++  }
++
++  @Test
++  void shouldReturn500ProblemWhenNoUniqueCodeCanBeGenerated() throws Exception {
++    when(linkService.create(any(), any(), any())).thenThrow(new CodeGenerationException(5));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\"}"))
++        .andExpect(status().isInternalServerError())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Short code generation failed"));
++  }
++
++  @Test
++  void shouldReturnGeneric500ProblemForUnexpectedErrors() throws Exception {
++    when(linkService.get("boom")).thenThrow(new IllegalStateException("secret internals"));
++
++    mockMvc.perform(get("/api/v1/links/boom"))
++        .andExpect(status().isInternalServerError())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.detail").value("An unexpected error occurred"));
++  }
++
++  @Test
++  void shouldReturn429ProblemWithRetryAfterWhenRateLimited() throws Exception {
++    when(rateLimiter.tryAcquire("127.0.0.1"))
++        .thenReturn(new RateLimitDecision(false, Duration.ofMillis(2_500)));
++
++    mockMvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
++            .content("{\"url\": \"" + TARGET + "\"}"))
++        .andExpect(status().isTooManyRequests())
++        .andExpect(header().string("Retry-After", "3"))
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Too many requests"));
++    verifyNoInteractions(linkService);
++  }
++
++  @Test
++  void shouldNotRateLimitReads() throws Exception {
++    when(linkService.get("abcdefg")).thenReturn(new Link(1L, "abcdefg", TARGET, CREATED, null));
++
++    mockMvc.perform(get("/api/v1/links/abcdefg")).andExpect(status().isOk());
++
++    verifyNoInteractions(rateLimiter);
++  }
++
++  @Test
++  void shouldReturnLinkMetadata() throws Exception {
++    when(linkService.get("abcdefg")).thenReturn(new Link(1L, "abcdefg", TARGET, CREATED, null));
++
++    mockMvc.perform(get("/api/v1/links/abcdefg"))
++        .andExpect(status().isOk())
++        .andExpect(jsonPath("$.code").value("abcdefg"))
++        .andExpect(jsonPath("$.shortUrl").value("http://localhost:8080/abcdefg"))
++        .andExpect(jsonPath("$.targetUrl").value(TARGET));
++  }
++
++  @Test
++  void shouldReturn404ProblemForUnknownLinkMetadata() throws Exception {
++    when(linkService.get("missing")).thenThrow(new LinkNotFoundException("missing"));
++
++    mockMvc.perform(get("/api/v1/links/missing"))
++        .andExpect(status().isNotFound())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Link not found"))
++        .andExpect(jsonPath("$.instance").value("/api/v1/links/missing"));
++  }
++
++  @Test
++  void shouldDeleteLinkAndReturn204() throws Exception {
++    mockMvc.perform(delete("/api/v1/links/abcdefg")).andExpect(status().isNoContent());
++
++    verify(linkService).delete("abcdefg");
++  }
++
++  @Test
++  void shouldReturn404ProblemWhenDeletingUnknownLink() throws Exception {
++    doThrow(new LinkNotFoundException("missing")).when(linkService).delete("missing");
++
++    mockMvc.perform(delete("/api/v1/links/missing"))
++        .andExpect(status().isNotFound())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
++  }
++
++  @Test
++  void shouldRedirectWith302AndNoStore() throws Exception {
++    when(linkResolver.resolve("abcdefg")).thenReturn(TARGET);
++
++    mockMvc.perform(get("/abcdefg"))
++        .andExpect(status().isFound())
++        .andExpect(header().string("Location", TARGET))
++        .andExpect(header().string("Cache-Control", "no-store"));
++  }
++
++  @Test
++  void shouldReturn404ProblemWhenRedirectingUnknownCode() throws Exception {
++    when(linkResolver.resolve("missing")).thenThrow(new LinkNotFoundException("missing"));
++
++    mockMvc.perform(get("/missing"))
++        .andExpect(status().isNotFound())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
++  }
++
++  @Test
++  void shouldReturn410ProblemWhenRedirectingExpiredCode() throws Exception {
++    when(linkResolver.resolve("expired")).thenThrow(new LinkExpiredException("expired"));
++
++    mockMvc.perform(get("/expired"))
++        .andExpect(status().isGone())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.title").value("Link expired"));
++  }
++
++  @Test
++  void shouldNotRouteMalformedCodesToTheRedirectHandler() throws Exception {
++    mockMvc.perform(get("/abc")).andExpect(status().isNotFound());
++    mockMvc.perform(get("/" + "a".repeat(33))).andExpect(status().isNotFound());
++    mockMvc.perform(get("/bad.code"))
++        .andExpect(status().isNotFound())
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
++
++    verifyNoInteractions(linkResolver);
++  }
++
++  /** {@code @WebMvcTest} does not apply {@code @ConfigurationPropertiesScan}; bind explicitly. */
++  @TestConfiguration(proxyBeanMethods = false)
++  @EnableConfigurationProperties(ShortenerProperties.class)
++  static class PropertiesConfiguration {}
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/RandomBase62CodeGeneratorTest.java b/src/test/java/io/github/marishasahay/shortener/link/RandomBase62CodeGeneratorTest.java
+new file mode 100644
+index 0000000..b602ebd
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/RandomBase62CodeGeneratorTest.java
+@@ -0,0 +1,64 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
++
++import java.security.SecureRandom;
++import java.util.HashSet;
++import java.util.Random;
++import java.util.Set;
++import java.util.stream.IntStream;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class RandomBase62CodeGeneratorTest {
++
++  private final RandomBase62CodeGenerator generator =
++      new RandomBase62CodeGenerator(new SecureRandom(), 7);
++
++  @ParameterizedTest
++  @ValueSource(ints = {1, 4, 7, 32})
++  void shouldGenerateCodesOfConfiguredLength(int length) {
++    RandomBase62CodeGenerator sized = new RandomBase62CodeGenerator(new SecureRandom(), length);
++
++    assertThat(sized.generate()).hasSize(length);
++  }
++
++  @Test
++  void shouldOnlyUseBase62Characters() {
++    IntStream.range(0, 1_000).mapToObj(i -> generator.generate())
++        .forEach(code -> assertThat(code).matches("^[0-9A-Za-z]{7}$"));
++  }
++
++  @Test
++  void shouldEventuallyUseEveryCharacterOfTheAlphabet() {
++    Set<Character> seen = new HashSet<>();
++    IntStream.range(0, 10_000).mapToObj(i -> generator.generate())
++        .forEach(code -> code.chars().forEach(c -> seen.add((char) c)));
++
++    assertThat(seen).hasSize(RandomBase62CodeGenerator.ALPHABET.length());
++  }
++
++  @Test
++  void shouldProduceDistinctCodes() {
++    Set<String> codes = new HashSet<>();
++    IntStream.range(0, 10_000).forEach(i -> codes.add(generator.generate()));
++
++    assertThat(codes).hasSize(10_000);
++  }
++
++  @Test
++  void shouldDeriveCodesFromTheRandomSource() {
++    RandomBase62CodeGenerator first = new RandomBase62CodeGenerator(new Random(42), 7);
++    RandomBase62CodeGenerator second = new RandomBase62CodeGenerator(new Random(42), 7);
++
++    assertThat(first.generate()).isEqualTo(second.generate());
++  }
++
++  @Test
++  void shouldRejectNonPositiveLength() {
++    assertThatIllegalArgumentException()
++        .isThrownBy(() -> new RandomBase62CodeGenerator(new SecureRandom(), 0));
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/link/TargetUrlPolicyTest.java b/src/test/java/io/github/marishasahay/shortener/link/TargetUrlPolicyTest.java
+new file mode 100644
+index 0000000..a7bb07f
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/link/TargetUrlPolicyTest.java
+@@ -0,0 +1,85 @@
++package io.github.marishasahay.shortener.link;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import java.util.stream.Stream;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.Arguments;
++import org.junit.jupiter.params.provider.MethodSource;
++import org.junit.jupiter.params.provider.NullAndEmptySource;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class TargetUrlPolicyTest {
++
++  private final TargetUrlPolicy policy = new TargetUrlPolicy("localhost");
++
++  static Stream<Arguments> acceptedUrls() {
++    return Stream.of(
++        Arguments.of("https://example.com", "https://example.com"),
++        Arguments.of("http://example.com/path?q=1#frag", "http://example.com/path?q=1#frag"),
++        Arguments.of("HTTPS://EXAMPLE.COM/upper", "HTTPS://EXAMPLE.COM/upper"),
++        Arguments.of("https://sub.example.co.uk:8443/x", "https://sub.example.co.uk:8443/x"),
++        Arguments.of("http://[2001:db8::1]/ipv6", "http://[2001:db8::1]/ipv6"),
++        Arguments.of("  https://example.com/trimmed  ", "https://example.com/trimmed"));
++  }
++
++  static Stream<Arguments> rejectedUrls() {
++    return Stream.of(
++        Arguments.of("ftp://example.com/file", "must be an absolute http or https URL"),
++        Arguments.of("javascript:alert(1)", "must be an absolute http or https URL"),
++        Arguments.of("mailto:someone@example.com", "must be an absolute http or https URL"),
++        Arguments.of("example.com/no-scheme", "must be an absolute http or https URL"),
++        Arguments.of("//example.com/scheme-relative", "must be an absolute http or https URL"),
++        Arguments.of("https:///no-host", "must contain a valid host"),
++        Arguments.of("https:opaque.example.com", "must contain a valid host"),
++        Arguments.of("https://bank.com@evil.com", "must not contain user info"),
++        Arguments.of("https://user:secret@example.com/", "must not contain user info"),
++        Arguments.of("http://localhost:8080/abc1234", "must not point at this shortener"),
++        Arguments.of("https://LOCALHOST/abc1234", "must not point at this shortener"),
++        Arguments.of("https://exa mple.com", "is not a valid URL"),
++        Arguments.of("https://example.com/" + "a".repeat(2048), "must be at most 2048 characters"));
++  }
++
++  @ParameterizedTest(name = "[{index}] {0}")
++  @MethodSource("acceptedUrls")
++  void shouldAcceptValidHttpUrls(String url, String expected) {
++    assertThat(policy.validate(url)).isEqualTo(expected);
++  }
++
++  @ParameterizedTest(name = "[{index}] {0} -> {1}")
++  @MethodSource("rejectedUrls")
++  void shouldRejectUrlsViolatingThePolicy(String url, String reason) {
++    assertThatThrownBy(() -> policy.validate(url))
++        .isInstanceOfSatisfying(InvalidLinkRequestException.class, ex -> {
++          assertThat(ex.field()).isEqualTo("url");
++          assertThat(ex.reason()).isEqualTo(reason);
++        });
++  }
++
++  @ParameterizedTest
++  @NullAndEmptySource
++  @ValueSource(strings = {"   ", "\t"})
++  void shouldRejectBlankUrls(String url) {
++    assertThatThrownBy(() -> policy.validate(url))
++        .isInstanceOf(InvalidLinkRequestException.class)
++        .hasMessage("url must not be blank");
++  }
++
++  @Test
++  void shouldAcceptUrlOfExactlyMaximumLength() {
++    String prefix = "https://example.com/";
++    String url = prefix + "a".repeat(TargetUrlPolicy.MAX_LENGTH - prefix.length());
++
++    assertThat(policy.validate(url)).hasSize(TargetUrlPolicy.MAX_LENGTH);
++  }
++
++  @Test
++  void shouldNotBlockAnyHostWhenOwnHostIsUnknown() {
++    TargetUrlPolicy withoutOwnHost = new TargetUrlPolicy(null);
++
++    assertThat(withoutOwnHost.validate("http://localhost:8080/x"))
++        .isEqualTo("http://localhost:8080/x");
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolverTest.java b/src/test/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolverTest.java
+new file mode 100644
+index 0000000..aaf9569
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ratelimit/ClientKeyResolverTest.java
+@@ -0,0 +1,51 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.springframework.mock.web.MockHttpServletRequest;
++
++class ClientKeyResolverTest {
++
++  private static final String REMOTE_ADDR = "10.0.0.5";
++
++  @Test
++  void shouldIgnoreForwardedHeaderUnlessTrusted() {
++    MockHttpServletRequest request = request("203.0.113.7");
++
++    assertThat(new ClientKeyResolver(false).resolve(request)).isEqualTo(REMOTE_ADDR);
++  }
++
++  @Test
++  void shouldUseFirstForwardedHopWhenTrusted() {
++    MockHttpServletRequest request = request(" 203.0.113.7 , 198.51.100.2, 10.0.0.1");
++
++    assertThat(new ClientKeyResolver(true).resolve(request)).isEqualTo("203.0.113.7");
++  }
++
++  @Test
++  void shouldFallBackToRemoteAddressWhenTrustedHeaderIsAbsent() {
++    MockHttpServletRequest request = request(null);
++
++    assertThat(new ClientKeyResolver(true).resolve(request)).isEqualTo(REMOTE_ADDR);
++  }
++
++  @ParameterizedTest
++  @ValueSource(strings = {"", "  ", " , 203.0.113.7"})
++  void shouldFallBackToRemoteAddressWhenFirstForwardedHopIsEmpty(String header) {
++    MockHttpServletRequest request = request(header);
++
++    assertThat(new ClientKeyResolver(true).resolve(request)).isEqualTo(REMOTE_ADDR);
++  }
++
++  private static MockHttpServletRequest request(String forwardedFor) {
++    MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/links");
++    request.setRemoteAddr(REMOTE_ADDR);
++    if (forwardedFor != null) {
++      request.addHeader(ClientKeyResolver.FORWARDED_FOR, forwardedFor);
++    }
++    return request;
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededExceptionTest.java b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededExceptionTest.java
+new file mode 100644
+index 0000000..6a6e4e8
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitExceededExceptionTest.java
+@@ -0,0 +1,18 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.time.Duration;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++
++class RateLimitExceededExceptionTest {
++
++  @ParameterizedTest(name = "{0} ms -> Retry-After {1}")
++  @CsvSource({"0, 1", "1, 1", "999, 1", "1000, 1", "1001, 2", "2500, 3", "60000, 60"})
++  void shouldRoundRetryAfterUpToWholeSecondsWithMinimumOfOne(long millis, long seconds) {
++    RateLimitExceededException ex = new RateLimitExceededException(Duration.ofMillis(millis));
++
++    assertThat(ex.retryAfterSeconds()).isEqualTo(seconds);
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitIT.java b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitIT.java
+new file mode 100644
+index 0000000..75bc575
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimitIT.java
+@@ -0,0 +1,42 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import io.github.marishasahay.shortener.IntegrationTestSupport;
++import java.time.Duration;
++import org.junit.jupiter.api.Test;
++import org.springframework.http.MediaType;
++
++class RateLimitIT extends IntegrationTestSupport {
++
++  private static final String BODY = "{\"url\": \"https://example.com/rate-limited\"}";
++
++  @Test
++  void shouldReturn429WithRetryAfterOnceCreationLimitIsExhausted() throws Exception {
++    for (int i = 0; i < 20; i++) {
++      postLink(BODY).andExpect(status().isCreated());
++    }
++
++    postLink(BODY)
++        .andExpect(status().isTooManyRequests())
++        .andExpect(header().string("Retry-After", "3"))
++        .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
++        .andExpect(jsonPath("$.status").value(429))
++        .andExpect(jsonPath("$.title").value("Too many requests"));
++  }
++
++  @Test
++  void shouldAllowCreationAgainAfterTokensRefill() throws Exception {
++    for (int i = 0; i < 20; i++) {
++      postLink(BODY).andExpect(status().isCreated());
++    }
++    postLink(BODY).andExpect(status().isTooManyRequests());
++
++    clock.advance(Duration.ofSeconds(3));
++
++    postLink(BODY).andExpect(status().isCreated());
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimiterTest.java b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimiterTest.java
+new file mode 100644
+index 0000000..03f7423
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/ratelimit/RateLimiterTest.java
+@@ -0,0 +1,95 @@
++package io.github.marishasahay.shortener.ratelimit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
++
++import io.github.marishasahay.shortener.config.ShortenerProperties;
++import io.github.marishasahay.shortener.support.MutableClock;
++import java.time.Duration;
++import java.time.Instant;
++import java.util.stream.IntStream;
++import org.junit.jupiter.api.Test;
++
++class RateLimiterTest {
++
++  private static final String CLIENT = "203.0.113.7";
++
++  private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
++  private final RateLimiter limiter = new RateLimiter(
++      new ShortenerProperties.RateLimit(20, Duration.ofMinutes(1), 1_000), clock);
++
++  @Test
++  void shouldAllowRequestsUpToCapacityThenReject() {
++    assertThat(acquire(20)).isEqualTo(20);
++
++    assertThat(limiter.tryAcquire(CLIENT).allowed()).isFalse();
++  }
++
++  @Test
++  void shouldReportTimeUntilTheNextTokenWhenRejected() {
++    acquire(20);
++
++    RateLimitDecision decision = limiter.tryAcquire(CLIENT);
++
++    assertThat(decision.allowed()).isFalse();
++    assertThat(decision.retryAfter()).isEqualTo(Duration.ofSeconds(3));
++  }
++
++  @Test
++  void shouldShortenRetryAfterAsTimePasses() {
++    acquire(20);
++    clock.advance(Duration.ofMillis(1_000));
++
++    assertThat(limiter.tryAcquire(CLIENT).retryAfter()).isEqualTo(Duration.ofMillis(2_000));
++  }
++
++  @Test
++  void shouldRefillContinuouslyAtCapacityPerPeriod() {
++    acquire(20);
++
++    clock.advance(Duration.ofSeconds(3));
++    assertThat(limiter.tryAcquire(CLIENT).allowed()).isTrue();
++    assertThat(limiter.tryAcquire(CLIENT).allowed()).isFalse();
++
++    clock.advance(Duration.ofSeconds(30));
++    assertThat(acquire(20)).isEqualTo(10);
++  }
++
++  @Test
++  void shouldNeverHoldMoreThanCapacityAfterLongIdlePeriod() {
++    acquire(20);
++    clock.advance(Duration.ofDays(30));
++
++    assertThat(acquire(25)).isEqualTo(20);
++  }
++
++  @Test
++  void shouldTrackEachClientIndependently() {
++    acquire(20);
++
++    assertThat(limiter.tryAcquire("198.51.100.1").allowed()).isTrue();
++    assertThat(limiter.tryAcquire(CLIENT).allowed()).isFalse();
++  }
++
++  @Test
++  void shouldNotRefillWhenClockMovesBackwards() {
++    acquire(20);
++    clock.advance(Duration.ofSeconds(-30));
++
++    assertThat(limiter.tryAcquire(CLIENT).allowed()).isFalse();
++  }
++
++  @Test
++  void shouldRejectNonPositiveSettings() {
++    assertThatIllegalArgumentException().isThrownBy(() -> new RateLimiter(
++        new ShortenerProperties.RateLimit(0, Duration.ofMinutes(1), 10), clock));
++    assertThatIllegalArgumentException().isThrownBy(() -> new RateLimiter(
++        new ShortenerProperties.RateLimit(5, Duration.ZERO, 10), clock));
++  }
++
++  private long acquire(int attempts) {
++    return IntStream.range(0, attempts)
++        .filter(i -> limiter.tryAcquire(CLIENT).allowed())
++        .count();
++  }
++}
+diff --git a/src/test/java/io/github/marishasahay/shortener/support/MutableClock.java b/src/test/java/io/github/marishasahay/shortener/support/MutableClock.java
+new file mode 100644
+index 0000000..95782d7
+--- /dev/null
++++ b/src/test/java/io/github/marishasahay/shortener/support/MutableClock.java
+@@ -0,0 +1,42 @@
++package io.github.marishasahay.shortener.support;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.ZoneId;
++import java.time.ZoneOffset;
++
++/**
++ * A {@link Clock} whose time is set by the test, for deterministic time-dependent behaviour.
++ */
++public final class MutableClock extends Clock {
++
++  private volatile Instant instant;
++
++  public MutableClock(Instant instant) {
++    this.instant = instant;
++  }
++
++  public void setInstant(Instant instant) {
++    this.instant = instant;
++  }
++
++  public void advance(Duration duration) {
++    this.instant = instant.plus(duration);
++  }
++
++  @Override
++  public Instant instant() {
++    return instant;
++  }
++
++  @Override
++  public ZoneId getZone() {
++    return ZoneOffset.UTC;
++  }
++
++  @Override
++  public Clock withZone(ZoneId zone) {
++    throw new UnsupportedOperationException("MutableClock is always UTC");
++  }
++}

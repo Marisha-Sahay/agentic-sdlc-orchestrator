@@ -1,68 +1,63 @@
 # Scenario: brownfield (enhancement + bug fix in the existing service)
 
 ```bash
-./agentic run brownfield --llm record --approvals interactive   # live, you review
-./agentic run brownfield                                         # replay the recording
+./agentic run brownfield --approvals scripted        # or --approvals interactive
+tools/final-service.sh                               # v1 + this run's patch = the final service
 ```
 
-## Requirement ([scenarios/brownfield.yaml](../../scenarios/brownfield.yaml))
-1. **Click analytics:** record each successful redirect (timestamp, referrer host, coarse
-   user-agent family) without adding noticeable redirect latency; expose
-   `GET /api/v1/links/{code}/stats` with total clicks, last click and daily counts for 7 days; no
-   raw IP addresses.
-2. **Bug fix (issue #1):** expired links keep redirecting while cached; they must return 410.
+## Input
+[scenarios/brownfield.yaml](../../scenarios/brownfield.yaml): (1) record every successful
+redirect (timestamp, referrer host, coarse user-agent family) without noticeable latency and
+expose `GET /api/v1/links/{code}/stats`; no raw IPs. (2) Issue #1: expired links keep redirecting
+while cached.
 
-## What it demonstrates
-- **Codebase reasoning:** `codebase-scan` (JavaParser, deterministic) runs in parallel with
-  `requirements`; `impact-analysis` joins both and must cite only files that exist
-  (`impact-grounding` gate).
-- **Two change types in one plan:** an additive feature (new table, async recording, new
-  endpoint) and a targeted bug fix; independent tasks run in parallel.
-- **Reviewer rejection loop:** the scripted reviewer rejects the first design ("make recording
-  explicitly asynchronous and bounded; state a retention policy"). The design is rolled back and
-  the architect retries with that comment as feedback.
-- **Change control:** the new Flyway migration and the API-contract change are routed to a human;
-  editing the applied V1 migration would be blocked; the contract must stay backward compatible
-  (`api-compatibility` gate: every v1 operation kept).
+## Normalized requirements
+FR-1 recording, FR-2 statistics, FR-3 privacy, FR-4 90-day retention, FR-5 issue #1; NFRs for
+redirect latency and compatibility. The requirements stage raises one open question: **Q-1**
+"every redirect" and "no noticeable latency" conflict, because a durable record needs a write on
+the hot path ([requirements.spec](../evidence/brownfield/artifacts/requirements.spec/v1.txt)).
+
+## Codebase reasoning
+`codebase-scan` (JavaParser, deterministic) runs in parallel with `requirements`; impact analysis
+names `RedirectController`, `LinkResolver`, `CacheConfiguration`, configuration, a new migration
+and the click package, and is checked against the index (`impact-grounding`).
 
 ## Decomposition
 
 ```mermaid
 flowchart LR
-  intake --> requirements
-  intake --> codebase-scan
-  requirements --> impact-analysis
-  codebase-scan --> impact-analysis
-  impact-analysis --> design["design 👤"]
-  design --> plan
-  plan -. expands .-> impl["impl-* (planner-defined, parallel where independent)"]
-  impl --> integrate
-  integrate --> tests
-  integrate --> docs
-  integrate --> security-review
-  tests --> verify
-  docs --> verify
-  security-review --> verify
-  verify --> release["release 👤"]
+  expiry-fix --> integrate
+  click-storage --> click-recording
+  click-storage --> click-statistics
+  click-recording --> integrate
+  click-statistics --> integrate
 ```
 
-## Validation per stage
+`expiry-fix` and `click-storage` run in parallel, then `click-recording` and `click-statistics`.
 
-| Stage | Gate |
-|---|---|
-| requirements | `requirements-quality`: identified FRs with acceptance criteria, measurable NFRs |
-| impact-analysis | `impact-grounding`: no invented files |
-| design | `required-artifacts`, `api-compatibility`; human sign-off |
-| plan | `plan-validity`: acyclic, ≤ 8 tasks, files in scope |
-| impl-* | `maven-compile`; policy (migration needs approval) |
-| tests | `maven-unit-tests` |
-| docs | `docs-coverage` (fallback: template writer) |
-| security-review | scanner HIGH findings block |
-| verify | full `mvn verify` incl. Testcontainers ITs and 80% coverage (self-repair on failure) |
-| release | patch, traceability, notes; human sign-off |
+## Decisions and approvals
 
-## Results
+| Node | Kind | Reasons | Decision (scripted demonstration) |
+|---|---|---|---|
+| design, attempt 1 | acceptance | sign-off, api-contract-change | **rejected**: "make recording explicitly asynchronous and bounded, state it is best effort (Q-1), add retention"; rolled back, the architect retried with the comment |
+| design, attempt 2 | acceptance | sign-off, api-contract-change | approved: best effort accepted for Q-1 ([ADR-0017](../adr/0017-best-effort-click-analytics.md)) |
+| impl-click-storage | acceptance | schema-migration (V2) | approved |
+| tests | acceptance | change-size (1,118 lines) | approved |
+| release | acceptance on tree `6ed596e7890b` | sign-off | approved |
 
-*Pending the live recording (needs `GEMINI_API_KEY` / `AGENTIC_MODEL`).* The recording will be
-committed under `cassettes/brownfield/` and its report under `docs/evidence/brownfield/`. The
-deterministic [drill](drill.md) runs this same workflow with planted faults today.
+## Results ([evidence](../evidence/brownfield))
+
+17 nodes, 18 attempts (1 retry after the rejection, 1 rollback), MTTR 1.3 s, 13 fixture model
+calls, 127 events, about 39 s. Final validation on tree `6ed596e7890b`: `mvn verify` (153 unit +
+24 ITs on PostgreSQL including `CachedLinkExpiryIT`, `ClickAnalyticsIT`, `ContractConformanceIT`;
+Checkstyle; coverage gate), security scan, structural contract compatibility against v1, docs
+coverage; the model security review (advisory: unauthenticated statistics, referrer host
+privacy) covers that tree.
+
+Output: [release.patch](../evidence/brownfield/release.patch) (28 files),
+[traceability](../evidence/brownfield/artifacts/release.traceability/v1.txt),
+[release notes](../evidence/brownfield/artifacts/release.notes/v1.txt).
+
+## Limits
+Hand-authored replies; analytics are best effort by an explicit design decision; management and
+statistics endpoints are unauthenticated (see the final service README's scale boundaries).

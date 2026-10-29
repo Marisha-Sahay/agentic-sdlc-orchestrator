@@ -15,4 +15,5 @@ fail.
 ## Consequences
 - Governance is centralised and reviewable in one place (`GovernancePolicy`).
 - More approvals in unattended runs; the scripted reviewer records every decision it makes as
-  `scripted-reviewer`, so automation is never mistaken for a human in the audit trail.
+  `scripted-demo (scenarios/<name>.yaml)`, so automation is never mistaken for a human in the
+  audit trail, and it only decides requests whose reasons it explicitly covers (ADR-0016).

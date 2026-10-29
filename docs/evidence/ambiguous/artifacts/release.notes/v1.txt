@@ -1,0 +1,37 @@
+# Click analytics
+
+Best-effort click recording with per-link statistics.
+
+## Changes
+- link_clicks table (V2)
+- Bounded asynchronous recording with counted drops
+- GET /api/v1/links/{code}/stats
+- 90-day retention purge
+
+## Risks
+- Clicks can be lost on saturation, failed batches or a crash (counted, documented)
+- Statistics are unauthenticated (gateway required)
+
+## Rollback plan
+Revert the commit. V2 is additive: leave it, or drop table link_clicks after reverting.
+
+## Testing
+Unit tests for privacy reduction, saturation and flushing; Testcontainers ITs for statistics, retention and contract conformance; final validation re-ran every check on the released tree.
+
+## Follow-ups
+- Referrer breakdown
+- Durable click pipeline if exact counts become a requirement
+
+## Validation evidence
+
+_Rendered from the audit log; not written by the model._
+
+- Validated tree: `56afae6844371475ac6bd921403bb065213a9b7a` (commit `314b5b56b9a4`)
+- Verification: **FULL**
+- Builds and tests ran in: host process; environment reduced to [DOCKER_CERT_PATH, DOCKER_CONTEXT, DOCKER_HOST, DOCKER_TLS_VERIFY, HOME, JAVA_HOME, LANG, LC_ALL, LC_CTYPE, LOGNAME, M2_HOME, MAVEN_HOME, MAVEN_OPTS, PATH, SHELL, TMPDIR, TZ, USER] and [TESTCONTAINERS_]*; NOT isolated: filesystem, network and resources are the host's
+- Final gates on this tree:
+  - PASS evidence-freshness: validation.evidence satisfies the ValidationEvidence contract
+  - PASS maven-verify: exit 0: mvn -q -B -ntp verify
+  - PASS security-scan: no HIGH scanner findings in 23 changed files (0 lower-severity)
+  - PASS final-api-compatibility: structurally backward compatible: 4 baseline operations kept with their success statuses, request and required response properties (5 total); types, formats and behaviour are not checked by this gate
+  - PASS final-docs-coverage: README documents every API path

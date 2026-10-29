@@ -1,0 +1,69 @@
+# Design
+
+Click analytics as an additive click package: RedirectController offers each successful redirect to a ClickRecorder, which buffers it in a bounded queue flushed in batches; a statistics endpoint reads aggregated counts. The redirect cache stores the expiry and re-checks it on every hit.
+
+## Components
+
+| Component | Responsibility | Files |
+|---|---|---|
+| ClickRecorder | Non-blocking click capture and batched writes | src/main/java/io/github/marishasahay/shortener/click/ClickRecorder.java |
+| LinkStatsService | Totals and zero-filled daily counts | src/main/java/io/github/marishasahay/shortener/click/LinkStatsService.java |
+| ClickRepository | Batch insert, aggregates, purge | src/main/java/io/github/marishasahay/shortener/click/ClickRepository.java |
+
+## Data model
+
+link_clicks(id, code, clicked_at timestamptz, referrer_host varchar(255), agent_family varchar(16) check in BROWSER/BOT/OTHER); indexes (code, clicked_at) and (clicked_at).
+
+## Decisions
+
+### Recording durability (Q-1)
+
+**Decision:** Best effort: bounded ArrayBlockingQueue (10,000), batched inserts every second; full queue drops and counts; graceful shutdown flushes
+
+**Rationale:** No database work on the redirect path and bounded memory; losses are visible in metrics
+
+**Alternatives:** Synchronous insert (adds a write to every redirect); Kafka (new infrastructure for an internal statistic)
+
+### Where clicks are recorded
+
+**Decision:** After a successful resolve in RedirectController
+
+**Rationale:** 404/410 are not clicks; the controller already has the headers
+
+**Alternatives:** Servlet filter (sees failed lookups too)
+
+### Click key
+
+**Decision:** Store the code, not the link id
+
+**Rationale:** Codes are never reused; recording needs no extra lookup
+
+**Alternatives:** link_id foreign key
+
+### Privacy
+
+**Decision:** Referrer host and agent family only
+
+**Rationale:** Enough for campaign analysis; no personal data
+
+**Alternatives:** Hashed IP
+
+### Retention
+
+**Decision:** Purge clicks older than 90 days hourly; days window capped at 90
+
+**Rationale:** Bounded table growth; stats never promise data that was purged
+
+**Alternatives:** Keep forever
+
+### Issue #1
+
+**Decision:** Cache (target, expiresAt) and re-check expiry on every lookup
+
+**Rationale:** Correct at the exact instant with no database access on hits
+
+**Alternatives:** Shorter TTL
+
+## Risks and trade-offs
+
+- Best-effort counts can under-count during saturation or crashes

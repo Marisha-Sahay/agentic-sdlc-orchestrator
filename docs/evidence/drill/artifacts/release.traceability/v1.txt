@@ -10,3 +10,5 @@ Files changed since baseline:
 - src/main/java/io/github/marishasahay/shortener/link/CachedLink.java
 - src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java
 - src/main/resources/db/migration/V2__index_links_expires_at.sql
+
+Validated tree: `51f75fa0757b5eeb5803a9ce24adfae3c30e8b79`

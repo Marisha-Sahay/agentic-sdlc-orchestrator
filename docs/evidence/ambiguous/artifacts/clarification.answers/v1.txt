@@ -1,0 +1,5 @@
+Q-1: Peak 2,000 redirects/s
+Q-2: p99 < 50 ms
+Q-3: Per-link totals, last click, daily counts
+Q-4: Best effort, up to 1 minute lag
+Q-5: Referrer host and agent family; 90 days

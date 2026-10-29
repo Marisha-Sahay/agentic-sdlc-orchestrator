@@ -21,17 +21,19 @@ flowchart LR
   I1 --> IN[integrate]
   I2 --> IN
   IN --> T[tests]
-  IN --> DO[docs]
-  IN --> S[security-review]
   T --> V[verify]
-  DO --> V
-  S --> V
-  V --> RL["release 👤"]
+  V --> S[security-review]
+  IN --> DO[docs]
+  S --> FV[final-validation]
+  DO --> FV
+  FV --> RL["release 👤"]
 ```
 
-<sub>Brownfield workflow. 👤 = mandatory human sign-off; policy adds more checkpoints for
-high-impact changes (schema migrations, dependency or API-contract changes). Parallel branches
-join at `integrate` and `verify`.</sub>
+<sub>Brownfield workflow. 👤 = mandatory human sign-off; policy adds checkpoints for high-impact
+changes: build-file changes need authorization *before* they are written or built; schema
+migrations, API-contract changes and large changes need acceptance of the validated result.
+Parallel branches join at `integrate` and `final-validation`, which re-runs every deterministic
+check on the one tree that release is then bound to.</sub>
 
 ## What makes it different
 
@@ -39,14 +41,16 @@ join at `integrate` and `verify`.</sub>
   ([`orchestrator-core`](orchestrator-core)) runs independent nodes in parallel on virtual
   threads, joins them, expands the graph at run time from the plan, and re-plans by invalidating
   exactly the nodes whose inputs changed.
-- **Agents propose, the engine decides.** Agents never write files. Every proposal passes policy
-  guardrails, then deterministic gates (compiler, tests, Checkstyle, coverage, API-compatibility,
-  grounding checks). A failed attempt is rolled back to the last green git checkpoint and retried
-  with the evidence, within bounded budgets.
-- **Humans own the high-impact decisions.** Design and release always need sign-off; policy forces
-  approval for migrations, dependency changes and API-contract changes, and cannot be opted out.
-  Reviewers can approve, reject with feedback (the agent retries) or edit any artifact (the engine
-  re-plans downstream).
+- **Agents propose, the engine decides.** Agents never write files. They read a snapshot of the
+  revision they started on; every proposal passes policy guardrails, a stale-file check, then
+  deterministic gates (compiler, tests, Checkstyle, coverage, structural API compatibility,
+  grounding checks). Any failure, including exceptions, restores the last accepted git checkpoint;
+  the attempt is retried with the evidence, within bounded budgets.
+- **Humans own the high-impact decisions.** Execution-sensitive changes (the build file) are
+  authorized before anything runs; design, release, migrations, API-contract and large changes are
+  accepted on the exact validated tree. Approvals fail closed: nothing is approved by default, an
+  unreachable reviewer pauses the run. Reviewers can approve, reject with feedback (the agent
+  retries) or amend artifacts (validated, then the engine re-plans downstream).
 - **Audit-grade by construction.** One append-only, hash-chained event log is the single source of
   truth: the audit trail, decision lineage, reliability metrics (success rate, retry/rollback
   rates, MTTR, end-to-end latency), the HTML run report and resume-after-stop are all derived from
@@ -54,47 +58,62 @@ join at `integrate` and `verify`.</sub>
 
 ## Quickstart
 
-Prerequisites: Java 21, Maven 3.9+, Docker (Testcontainers and local PostgreSQL).
+Prerequisites: Java 21, Maven 3.9+, Docker (Testcontainers, local PostgreSQL, optional sandbox).
 
 ```bash
-mvn verify                                     # all modules: 244 tests, Checkstyle, 80% coverage gates
-./agentic run drill                            # governance drill: no API key, ~25 s, finishes green
-open .runs/drill-*/report.html                 # graph, metrics, checkpoints, lineage, gate evidence
-./agentic metrics                              # reliability metrics across runs
-./agentic verify-log <run-id>                  # verify the audit log's hash chain
+mvn verify                                          # all modules, Checkstyle, 80% coverage gates
+./agentic run drill                                 # governance drill: planted faults, ~35 s
+./agentic run brownfield --approvals scripted       # analytics + issue #1 fix, ~40 s
+./agentic run greenfield --approvals scripted       # builds the v1 service from a scaffold
+./agentic run ambiguous  --approvals scripted       # clarification round, then delivery
+./agentic check-evidence drill greenfield brownfield ambiguous   # committed evidence holds
+open .runs/brownfield/report.html                   # graph, metrics, approvals, lineage, gates
 ```
 
-The **drill** runs the real brownfield workflow (same templates, agents, policy, gates and Maven
-builds) with hand-authored model replies and planted faults: a hallucinated file, a reviewer
-amendment that forces re-planning, an edit to an applied migration, a compile failure and a model
-outage. See [docs/scenarios/drill.md](docs/scenarios/drill.md).
+**What these runs are.** The four scenarios replay **hand-authored model replies** (labelled
+`fixture` in every audit log) through the real workflow: agents, policy, gates, Maven builds on
+PostgreSQL, approvals. They demonstrate the orchestration and produce real, validated code; they
+do not demonstrate model quality. The reviewer is `--approvals scripted`: **demonstration
+decisions** written in each scenario file, recorded as `scripted-demo`, never as a human. Live
+model runs and their status are described in [docs/scenarios](docs/scenarios/README.md).
 
-Live runs use Gemini through LangChain4j:
+Run as the reviewer yourself (any scenario): `./agentic run brownfield --approvals interactive`.
+Without a terminal and without `--approvals`, a live run refuses to start rather than auto-approve.
+
+Live runs use Gemini through LangChain4j (`cp .env.example .env`, set `GEMINI_API_KEY` and
+`AGENTIC_MODEL`), recorded into a separate cassette set:
 
 ```bash
-cp .env.example .env       # set GEMINI_API_KEY and AGENTIC_MODEL (git-ignored)
-./agentic run brownfield --llm record --approvals interactive   # you are the reviewer
-./agentic run brownfield                                         # replays the recording, no key
+./agentic run brownfield --llm record --cassettes brownfield-live --approvals interactive
 ```
 
-`./agentic stop <run-id>` engages the kill switch (safe stop); `./agentic resume <run-id>` continues
-from the log without repeating accepted work.
+`./agentic stop <run-id>` engages the kill switch (safe stop); `./agentic resume <run-id>` verifies
+the log and artifacts, then continues without repeating accepted work. `--sandbox docker` runs every
+build and test in a container without network or host secrets (`./agentic warmup-sandbox` once).
 
-To try the URL shortener itself, start it and test every endpoint from the browser:
+### The URL shortener
+
+`url-shortener/` is the **v1 baseline** the brownfield and ambiguous scenarios start from. The
+**final service** (v1 + click analytics + the issue #1 fix) is v1 plus the patch the brownfield run
+validated and released; it is produced, not duplicated:
 
 ```bash
-cd url-shortener && docker compose up -d && mvn spring-boot:run   # service on :8080
-open http://localhost:8080/swagger-ui.html    # second terminal: Swagger UI, "Try it out" enabled
+tools/final-service.sh                     # -> target/final-service
+cd target/final-service && mvn verify      # 153 unit + 24 integration tests, coverage gate
+docker compose up -d && mvn spring-boot:run
+open http://localhost:8080/swagger-ui.html
 ```
 
 ## Scenarios
 
-| Scenario | Starts from | Demonstrates |
-|---|---|---|
-| [`drill`](docs/scenarios/drill.md) | v1 service | Every control under failure, deterministically (no model) |
-| [`brownfield`](docs/scenarios/brownfield.md) | v1 service | Impact analysis, enhancement + bug fix, reviewer rejection loop, schema-change approval |
-| [`greenfield`](docs/scenarios/greenfield.md) | empty Spring Boot scaffold | Building the service from a requirement |
-| [`ambiguous`](docs/scenarios/ambiguous.md) | v1 service | Detecting ambiguity, stakeholder clarification at a checkpoint, re-planning |
+| Scenario | Starts from | Demonstrates | Evidence |
+|---|---|---|---|
+| [`greenfield`](docs/scenarios/greenfield.md) | empty Spring Boot scaffold | Requirement to a working service in 6 dependent tasks; build-file change authorized before execution | [docs/evidence/greenfield](docs/evidence/greenfield) |
+| [`brownfield`](docs/scenarios/brownfield.md) | v1 service | Impact analysis, enhancement + bug fix, reviewer rejection loop, schema-change approval; produces the final service | [docs/evidence/brownfield](docs/evidence/brownfield) |
+| [`ambiguous`](docs/scenarios/ambiguous.md) | v1 service | Questions, labelled demonstration answers, refinement, then delivery | [docs/evidence/ambiguous](docs/evidence/ambiguous) |
+| [`drill`](docs/scenarios/drill.md) | v1 service | Every control under failure: grounding, re-planning, policy block, compile rollback, model outage | [docs/evidence/drill](docs/evidence/drill) |
+
+All four use hand-authored model replies; see each page for provenance and limits.
 
 ## Repository
 
@@ -103,9 +122,10 @@ open http://localhost:8080/swagger-ui.html    # second terminal: Swagger UI, "Tr
 | [`orchestrator-core`](orchestrator-core) | Graph engine: scheduler, node lifecycle, gates, policy, approvals, git workspace, event log, metrics. No Spring, no LLM. |
 | [`orchestrator-agents`](orchestrator-agents) | SDLC agents on LangChain4j, record/replay, JavaParser codebase index, contract and grounding gates |
 | [`orchestrator-app`](orchestrator-app) | `agentic` CLI: workflow templates, console approvals, live progress, HTML report, metrics |
-| [`url-shortener`](url-shortener) | The service: v1 baseline and brownfield target ([README](url-shortener/README.md)) |
+| [`url-shortener`](url-shortener) | The v1 baseline service ([README](url-shortener/README.md)); the final service is produced by `tools/final-service.sh` |
 | [`scenarios`](scenarios) | Scenario definitions and the greenfield scaffold |
-| [`cassettes`](cassettes) | Recorded or hand-authored model replies for offline replay |
+| [`cassettes`](cassettes) | Hand-authored model replies for offline replay (generated by `tools/make-*-cassettes.py`) |
+| [`tools`](tools) | Fixture generators and sources, `final-service.sh`, the redirect load test |
 | [`config`](config) | Checkstyle rules and the engineering conventions given to code-writing agents |
 
 ## Documentation

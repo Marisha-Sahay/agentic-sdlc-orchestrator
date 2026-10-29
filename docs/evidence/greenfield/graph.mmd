@@ -1,0 +1,53 @@
+flowchart LR
+  intake["intake<br/><small>requirements</small>"]:::succeeded
+  requirements["requirements<br/><small>requirements</small>"]:::succeeded
+  intake --> requirements
+  design["design<br/><small>design</small>"]:::succeeded
+  requirements --> design
+  plan["plan<br/><small>planning</small>"]:::succeeded
+  design --> plan
+  impl_configuration["impl-configuration<br/><small>implementation</small>"]:::succeeded
+  plan --> impl_configuration
+  impl_persistence["impl-persistence<br/><small>implementation</small>"]:::succeeded
+  plan --> impl_persistence
+  impl_link_rules["impl-link-rules<br/><small>implementation</small>"]:::succeeded
+  impl_configuration --> impl_link_rules
+  plan --> impl_link_rules
+  impl_rate_limiting["impl-rate-limiting<br/><small>implementation</small>"]:::succeeded
+  impl_configuration --> impl_rate_limiting
+  plan --> impl_rate_limiting
+  impl_link_service["impl-link-service<br/><small>implementation</small>"]:::succeeded
+  impl_persistence --> impl_link_service
+  impl_link_rules --> impl_link_service
+  plan --> impl_link_service
+  impl_web_api["impl-web-api<br/><small>implementation</small>"]:::succeeded
+  impl_link_service --> impl_web_api
+  impl_rate_limiting --> impl_web_api
+  plan --> impl_web_api
+  integrate["integrate<br/><small>implementation</small>"]:::succeeded
+  plan --> integrate
+  impl_configuration --> integrate
+  impl_persistence --> integrate
+  impl_link_rules --> integrate
+  impl_link_service --> integrate
+  impl_rate_limiting --> integrate
+  impl_web_api --> integrate
+  tests["tests<br/><small>testing</small>"]:::succeeded
+  integrate --> tests
+  docs["docs<br/><small>documentation</small>"]:::succeeded
+  integrate --> docs
+  verify["verify<br/><small>verification</small>"]:::succeeded
+  tests --> verify
+  security_review["security-review<br/><small>security review</small>"]:::succeeded
+  verify --> security_review
+  final_validation["final-validation<br/><small>verification</small>"]:::succeeded
+  security_review --> final_validation
+  docs --> final_validation
+  release["release<br/><small>release readiness</small>"]:::succeeded
+  final_validation --> release
+  classDef succeeded fill:#d6f5e3,stroke:#1a7f4b,color:#0b3d22
+  classDef recovered fill:#d6f5e3,stroke:#d08700,stroke-width:3px,color:#0b3d22
+  classDef failed fill:#fde0dc,stroke:#c0362c,color:#5c120c
+  classDef skipped fill:#eeeeee,stroke:#999,color:#555,stroke-dasharray:4 3
+  classDef pending fill:#fff4d6,stroke:#a86400,color:#4d2e00
+  classDef running fill:#dfe8ff,stroke:#2f5bb7,color:#12275a

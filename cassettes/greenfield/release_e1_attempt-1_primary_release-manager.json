@@ -1,0 +1,12 @@
+{
+  "key": "release/e1/attempt-1/primary/release-manager",
+  "agent": "release-manager",
+  "model": "fixture:hand-authored",
+  "promptSha256": "*",
+  "response": "{\"title\": \"URL shortener v1\", \"summary\": \"Create, redirect, read and delete short links on PostgreSQL with abuse protection and an OpenAPI contract.\", \"changes\": [\"Link API and redirect\", \"URL and alias policies\", \"Per-client rate limit\", \"RFC 9457 errors\", \"Swagger UI on the checked-in contract\"], \"risks\": [\"Management API is unauthenticated (gateway required)\", \"Rate limit and cache are per instance\"], \"rollbackPlan\": \"New service: undeploy; V1 can be dropped with the database.\", \"testingSummary\": \"Unit and Testcontainers integration tests; coverage gate.\", \"followUps\": [\"Authentication and link ownership\", \"Click analytics\"]}",
+  "latencyMs": 0,
+  "inputTokens": -1,
+  "outputTokens": -1,
+  "recordedAt": "2026-10-29T00:00:00Z",
+  "error": null
+}

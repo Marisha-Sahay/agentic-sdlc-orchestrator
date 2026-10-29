@@ -1,0 +1,46 @@
+# Design
+
+A single Spring Boot service on PostgreSQL: a links table with soft delete, random base62 codes with insert-on-conflict retries, a Caffeine redirect cache, URL and alias policies, a per-client token bucket on creation, and RFC 9457 errors.
+
+## Components
+
+| Component | Responsibility | Files |
+|---|---|---|
+| LinkService | Create, read and delete links | src/main/java/io/github/marishasahay/shortener/link/LinkService.java |
+| LinkResolver | Redirect lookups through a cache | src/main/java/io/github/marishasahay/shortener/link/LinkResolver.java |
+| RateLimiter | Per-client token bucket | src/main/java/io/github/marishasahay/shortener/ratelimit/RateLimiter.java |
+| ProblemDetailsAdvice | Consistent errors | src/main/java/io/github/marishasahay/shortener/web/ProblemDetailsAdvice.java |
+
+## Data model
+
+links(id, code unique, target_url, created_at, expires_at, deleted_at); a check that expiry follows creation.
+
+## Decisions
+
+### Code generation
+
+**Decision:** 7 random base62 characters, ON CONFLICT DO NOTHING retry
+
+**Rationale:** Not enumerable, no coordination between instances
+
+**Alternatives:** Sequential ids encoded in base62 (enumerable); Hash of the URL
+
+### Redirect status
+
+**Decision:** 302 with Cache-Control: no-store
+
+**Rationale:** Browsers do not cache it, so deletion and expiry take effect
+
+**Alternatives:** 301 (cached forever by browsers)
+
+### Persistence
+
+**Decision:** JdbcClient with explicit SQL and Flyway
+
+**Rationale:** Small schema; SQL stays visible
+
+**Alternatives:** JPA
+
+## Risks and trade-offs
+
+- Rate limits and cache are per instance

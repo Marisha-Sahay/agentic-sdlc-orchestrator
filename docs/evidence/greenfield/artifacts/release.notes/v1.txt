@@ -1,0 +1,38 @@
+# URL shortener v1
+
+Create, redirect, read and delete short links on PostgreSQL with abuse protection and an OpenAPI contract.
+
+## Changes
+- Link API and redirect
+- URL and alias policies
+- Per-client rate limit
+- RFC 9457 errors
+- Swagger UI on the checked-in contract
+
+## Risks
+- Management API is unauthenticated (gateway required)
+- Rate limit and cache are per instance
+
+## Rollback plan
+New service: undeploy; V1 can be dropped with the database.
+
+## Testing
+Unit and Testcontainers integration tests; coverage gate.
+
+## Follow-ups
+- Authentication and link ownership
+- Click analytics
+
+## Validation evidence
+
+_Rendered from the audit log; not written by the model._
+
+- Validated tree: `8451d0db90c74263baa5758b7a98213bc95297ac` (commit `f2afcaf659d1`)
+- Verification: **FULL**
+- Builds and tests ran in: host process; environment reduced to [DOCKER_CERT_PATH, DOCKER_CONTEXT, DOCKER_HOST, DOCKER_TLS_VERIFY, HOME, JAVA_HOME, LANG, LC_ALL, LC_CTYPE, LOGNAME, M2_HOME, MAVEN_HOME, MAVEN_OPTS, PATH, SHELL, TMPDIR, TZ, USER] and [TESTCONTAINERS_]*; NOT isolated: filesystem, network and resources are the host's
+- Final gates on this tree:
+  - PASS evidence-freshness: validation.evidence satisfies the ValidationEvidence contract
+  - PASS maven-verify: exit 0: mvn -q -B -ntp verify
+  - PASS security-scan: no HIGH scanner findings in 55 changed files (0 lower-severity)
+  - PASS final-api-compatibility: valid OpenAPI 3.1.0 with 4 operations (no baseline to compare)
+  - PASS final-docs-coverage: README documents every API path

@@ -1,0 +1,1 @@
+README: statistics endpoint, click settings, best-effort semantics, scale boundaries; changelog.

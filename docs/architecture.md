@@ -104,40 +104,45 @@ sequenceDiagram
   participant R as NodeRunner
   participant A as Agent
   participant P as PolicyEngine
+  participant H as Reviewer
   participant W as GitWorkspace
   participant G as Exit gates
-  participant H as Reviewer
   S->>R: run(node) on a virtual thread
   R->>R: entry gates (once)
   loop each attempt (primary strategy, then fallback)
-    R->>A: execute(context: inputs, feedback of earlier attempts)
+    R->>A: execute(context: inputs, feedback, read-only snapshot of base revision)
     A-->>R: proposal: artifacts, file changes, decisions
-    R->>P: evaluate proposal (nothing written yet)
+    R->>P: evaluate proposal against the base revision (nothing written yet)
     alt BLOCK finding
       R-->>R: reject; feedback = findings
-    else allowed
-      R->>W: lock; apply changes
-      R->>G: compile / test / contract / grounding checks
-      alt a gate fails
-        R->>W: rollback to last checkpoint
-        R-->>R: reject; feedback = gate evidence
-      else gates pass
-        opt ALWAYS, or policy REQUIRE_APPROVAL
-          R->>H: request (reasons, gate evidence, diff, artifacts)
-          H-->>R: approve / reject with comment / approve with amendments
-        end
-        R->>W: checkpoint commit; unlock
-        R-->>S: SUCCEEDED + consumed input hashes + changed keys
+    else execution-sensitive change (build file)
+      R->>H: AUTHORIZATION of proposal hash, with a preview diff
+      H-->>R: authorize / refuse (refuse: reject, nothing was written)
+    end
+    R->>W: lock; touched files changed since base? reject as stale
+    R->>W: apply; tree hash T
+    R->>G: compile / test / contract / grounding checks on T
+    alt a gate fails
+      R->>W: rollback to last checkpoint; reject; feedback = gate evidence
+    else gates pass
+      opt ALWAYS, policy REQUIRE_APPROVAL, or task-declared reason
+        R->>H: ACCEPTANCE of proposal hash on tree T (diff, gate evidence, reasons)
+        H-->>R: approve / reject with comment / approve with validated amendments
       end
+      R->>W: tree still T? inputs still current? then checkpoint commit; unlock
+      R-->>S: SUCCEEDED (success event = commit point) + consumed hashes + changed keys
     end
   end
   S->>S: expand graph, invalidate stale consumers, schedule next
 ```
 
-A rejected attempt never leaves a trace in the workspace: changes are applied only under the
-workspace lock and either committed as a checkpoint or rolled back. The rejection reason (gate
-output, policy findings, reviewer comment, parse error) becomes the next attempt's feedback, so a
-retry is a corrected attempt rather than a blind repeat.
+Every path out of the locked section either commits an accepted checkpoint or restores the last
+one: a gate failure, a reviewer rejection, an unreachable reviewer (the run pauses), an
+exception while applying, approving, committing or publishing, or a failed audit write. If the
+restore itself fails the workspace is quarantined, the failure and the rollback error are both
+recorded, and the run safe-stops. The rejection reason (gate output, policy findings, reviewer
+comment, parse error, stale files) becomes the next attempt's feedback, so a retry is a corrected
+attempt rather than a blind repeat.
 
 ### 3.4 Scheduling, parallelism and synchronization
 
@@ -148,9 +153,12 @@ one completed node. Node runners execute on virtual threads, so a node blocked o
 a human approval costs almost nothing.
 
 Parallel nodes may all touch one workspace. Agent work (the slow part: model calls) runs fully in
-parallel; only *apply, gate and commit* is serialized by a workspace lock, as are gates that read
-the workspace (`Gate.usesWorkspace()`). This gives real parallelism without two nodes ever
-building a half-applied tree.
+parallel, each attempt reading its own snapshot (a git worktree of the revision it started on);
+only *apply, gate, approve and commit* is serialized by a workspace lock, as are gates that read
+the workspace (`Gate.usesWorkspace()`). Before applying, the engine checks that no file the
+proposal touches changed since its snapshot; if one did, the proposal is rejected as stale and
+retried on a fresh snapshot, so full-file proposals never overwrite accepted work. Planned tasks
+that list the same file are serialized at expansion; disjoint tasks stay parallel.
 
 ### 3.5 Dynamic planning and re-planning
 
@@ -165,8 +173,9 @@ rebuilt without calling a model.
 When an artifact gets a new version (a reviewer amendment, or a re-run producing different output),
 the scheduler invalidates every accepted node whose recorded input hash no longer matches, plus
 its downstream closure, and runs them again. Nodes spawned by an invalidated planner are removed
-and re-expanded; a node that is still running when it becomes stale is re-queued when it reports
-back. This is the same idea as an incremental build system (Bazel, Make): re-run what is affected,
+and re-expanded. A node that is still running when it becomes stale cannot publish: under a
+publish lock it sees that its generation changed or that an input it read has a newer version,
+rolls back and reports `AttemptDiscarded`, and is re-queued. This is the same idea as an incremental build system (Bazel, Make): re-run what is affected,
 keep what is not.
 
 ## 4. Cross-stage context and decision lineage
@@ -175,7 +184,7 @@ Stages communicate only through the `ArtifactStore`: versioned, content-addresse
 (`requirements.spec`, `design.openapi`, `plan.tasks`, ...). Reading through `NodeContext.input()`
 records the consumed version, so every decision an agent records (`DecisionRecorded`) carries
 lineage like `requirements.spec@v2#58ea1cf39043`: which version of which input it was based on,
-and who produced that version (a node, or `human:<reviewer>`).
+and who produced that version (a node, or `reviewer:<name>` for amendments).
 
 ## 5. Governance
 
@@ -183,18 +192,23 @@ and who produced that version (a node, or `human:<reviewer>`).
 
 Agents return proposals; only the engine writes. The `WorkspaceScopeRule` limits writes to
 `src/**`, `api/**`, docs and the build file, and **protects the guardrails themselves** (CI
-workflows, Checkstyle rules, policy config): otherwise an agent could make a failing gate pass by
-weakening the gate. Paths escaping the workspace are rejected twice (policy and `GitWorkspace`).
+workflows, Checkstyle rules, policy config); `build-integrity` does the same for the gate
+configuration inside `pom.xml`. Otherwise an agent could make a failing gate pass by weakening the
+gate. `stage-write-scope` narrows each stage further (documentation writes only docs, tests only
+`src/test`, analysis, review and release nothing). Paths escaping the workspace are rejected twice
+(policy and `GitWorkspace`).
 
 ### 5.2 Policy rules (`GovernancePolicy`)
 
 | Rule | Severity | Why |
 |---|---|---|
 | `workspace-scope` | BLOCK | Agents stay inside allowed paths; governance files are immutable |
+| `stage-write-scope` | BLOCK | Each stage writes only its own kind of file |
+| `build-integrity` | BLOCK | Test, coverage, Checkstyle and skip settings in `pom.xml` cannot change |
 | `secret-leak` | BLOCK | Keys, tokens, private keys, hard-coded passwords in code or artifacts |
 | `schema-migration` (edit existing) | BLOCK | Applied migrations are immutable (Flyway checksums, environment drift) |
 | `schema-migration` (new) | REQUIRE_APPROVAL | Schema changes are high impact |
-| `dependency-change` (`pom.xml`) | REQUIRE_APPROVAL | Supply-chain and licence review |
+| `dependency-change` (`pom.xml`) | REQUIRE_AUTHORIZATION | Supply-chain review, and the build executes it: a human authorizes the exact proposal before it is written or built |
 | `api-contract-change` (`openapi.yaml`) | REQUIRE_APPROVAL | Consumer impact |
 | `security-config-change` | REQUIRE_APPROVAL | Security-sensitive code |
 | `change-size` (> 800 lines) | REQUIRE_APPROVAL | Large changes deserve a human look |
@@ -208,13 +222,15 @@ The engine fails closed: a rule that throws produces a BLOCK, and a gate that th
 |---|---|---|
 | `requirements-quality` / `requirements-resolved` | requirements | Contract parses; FRs identified with acceptance criteria; NFRs measurable; no open questions after clarification |
 | `impact-grounding` | impact-analysis | Every MODIFY/DELETE path exists in the JavaParser index; no ADD of an existing file |
-| `api-compatibility` | design | Valid OpenAPI 3; no operation of the baseline contract removed |
+| `api-compatibility` | design | Valid OpenAPI 3; structurally backward compatible with the baseline: operations, success statuses, request properties accepted and not newly required, required response properties kept (types, formats and behaviour are not checked) |
 | `plan-validity` | plan | 1..8 tasks, kebab ids, acyclic resolvable dependencies, files within `src/main` / `api` |
 | `maven-compile` | each implementation task | The project compiles |
 | `maven-unit-tests` | tests | Unit tests pass |
 | `docs-coverage` | docs | README documents every API path |
 | `security-gate` | security-review | No HIGH finding from the deterministic scanner |
-| `maven-verify` | verify | Unit + Testcontainers ITs + Checkstyle + 80% coverage |
+| `maven-verify` | verify | Unit + integration tests on PostgreSQL + Checkstyle + 80% coverage |
+| `evidence-freshness`, `maven-verify`, `security-scan`, `final-api-compatibility`, `final-docs-coverage` | final-validation | Every deterministic check again, on the one tree that will be released; the security review must still describe it |
+| `validated-tree` | release (entry) | The workspace is the tree final validation validated |
 | `required-artifacts` | entry/exit of several nodes | Stage contracts are met |
 
 Model judgment is advisory only: the security reviewer's findings surface at release approval but
@@ -230,11 +246,20 @@ negative should not wave a scanner finding through.
 | Any node | When policy flags the proposal (migration, dependency, contract, security config, size) |
 | `release` | Always: patch, traceability, security review, release notes |
 
-The reviewer sees why approval is needed, the gate evidence, the artifacts and the diff, and can
+There are two kinds of decision ([ADR-0016](adr/0016-authorization-acceptance-and-tree-bound-evidence.md)):
+**authorization** before anything in a proposal is written or built (execution-sensitive
+changes), and **acceptance** after the gates, on the exact validated tree. Each is recorded with
+the proposal hash (and the tree hash); a changed proposal is a new request.
+
+The reviewer sees why a decision is needed, the gate evidence, the artifacts and the diff, and can
 **approve**, **reject with a comment** (rolled back; the agent retries with the comment as
-feedback) or **approve with amendments** to any artifact (stored as `human:<reviewer>` versions,
-triggering re-planning). `ConsoleApprovalGateway` is interactive; the scripted gateway replays
-decisions from the scenario file for unattended runs and records them as `scripted-reviewer`.
+feedback) or **approve with amendments** to any artifact (validated against that artifact's
+contract and the secret policy first; stored as `reviewer:<name>` versions, triggering
+re-planning). `ConsoleApprovalGateway` is interactive. The scripted gateway replays
+demonstration decisions from the scenario file, recorded as `scripted-demo (...)`; it has no
+default, and each decision answers only a request of its kind whose reason codes it covers.
+Anything else, a closed terminal or a failing gateway pauses the run: nothing is ever approved
+by default, and a run without a terminal must select scripted decisions explicitly.
 
 ## 6. Reliability controls
 
@@ -246,8 +271,10 @@ decisions from the scenario file for unattended runs and records them as `script
 | Self-repair | `verify` runs the full build first and only asks a model for the smallest fix if it fails, still gated and rolled back |
 | Rollback | Every accepted change is a git checkpoint in a private run workspace; rejected attempts reset to it |
 | Safe stop | Kill switch file (`agentic stop`), Ctrl-C, run-time / attempt / model-call budgets, failure threshold: no new attempts start, running ones finish atomically, the run ends `PAUSED` |
-| Resume | `agentic resume`: accepted nodes and artifacts restored from the log, expansions replayed without model calls, workspace reset to the last checkpoint, failed/unfinished nodes re-run |
-| Environment-aware gates | Without Docker, `verify` degrades to unit tests and the degradation is recorded in the run settings |
+| Resume | `agentic resume`: refuses a log whose hash chain breaks, an artifact whose content no longer matches its recorded hash, or a different scenario, requirement or workflow; restores only nodes whose success event was written (the commit point) and only their artifact versions; resets the workspace to the last accepted checkpoint, or the baseline; carries attempt and model-call budgets over unless `--reset-budgets <who>` is given, which is recorded |
+| Audit fail-stop | If an event cannot be written the log refuses further writes, the attempt's changes are rolled back and the run stops; it never continues unaudited |
+| Degraded verification | Without Docker, builds skip integration tests and the coverage gate; final validation records `DEGRADED` with the skipped checks, release notes say so, and release acceptance requires a decision that explicitly covers `degraded-verification` |
+| Execution sandbox | Gate commands run with an allow-listed environment (no model keys). `--sandbox docker` adds a container per build: no network, CPU/memory/pids limits, only the workspace and a dedicated dependency cache mounted, integration tests against a private PostgreSQL sidecar, no Docker socket |
 
 ## 7. Observability and traceability
 
@@ -316,7 +343,7 @@ The prototype runs in one process. The seams are where production would differ:
 |---|---|---|
 | Event log | JSONL file, hash-chained | Postgres or Kafka, signed checkpoints, WORM storage |
 | Scheduler | In-process | Durable workflow runtime (Temporal-style) or the same engine behind a lease per run |
-| Workspace | Local git repo | Ephemeral container per run; branch + pull request on the real repository |
+| Workspace | Local git repo; builds in a host process or the opt-in Docker sandbox | Ephemeral container per run; branch + pull request on the real repository |
 | Approvals | Terminal / scripted | Pull-request review or ticketing integration, SSO identities |
 | Gates | Local Maven | CI pipeline jobs; SAST/SCA tools as gates |
 | Telemetry | Event log + report | OpenTelemetry spans per node/attempt exported from the same events |
