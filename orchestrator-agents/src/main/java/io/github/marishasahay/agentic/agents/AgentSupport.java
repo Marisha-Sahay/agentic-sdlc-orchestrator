@@ -1,6 +1,7 @@
 package io.github.marishasahay.agentic.agents;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import io.github.marishasahay.agentic.agents.llm.JsonShape;
 import io.github.marishasahay.agentic.agents.llm.LlmCall;
 import io.github.marishasahay.agentic.agents.llm.LlmClient;
 import io.github.marishasahay.agentic.agents.llm.LlmReply;
@@ -16,9 +17,12 @@ import java.util.List;
 public final class AgentSupport {
 
   private static final String OUTPUT_RULES = """
-      Output contract: respond with ONE JSON object that matches the response schema exactly.
-      No Markdown fences, no commentary outside the JSON. Use empty arrays rather than null.
-      Never include secrets, API keys or credentials in any output.""";
+      Output contract: respond with ONE JSON object with exactly this shape (each value names
+      its type; [ ] means a list of that shape):
+      %s
+      Use these field names exactly. No Markdown fences, no commentary outside the JSON. Use
+      empty arrays rather than null. Never include secrets, API keys or credentials in any
+      output.""";
   private static final int MAX_FEEDBACK_CHARS = 8_000;
 
   private final LlmClient client;
@@ -41,7 +45,8 @@ public final class AgentSupport {
   public <T> T ask(NodeContext ctx, String agent, String system, String user, Class<T> type) {
     String key = ctx.node().id() + "/e" + ctx.execution() + "/attempt-" + ctx.attempt() + "/"
         + ctx.strategy() + "/" + agent;
-    LlmReply reply = client.complete(new LlmCall(key, agent, system + "\n\n" + OUTPUT_RULES,
+    LlmReply reply = client.complete(new LlmCall(key, agent,
+        system + "\n\n" + OUTPUT_RULES.formatted(JsonShape.of(type)),
         user + feedbackSection(ctx.feedback()), type));
     ctx.recordAgentCall(agent, reply.model(), reply.mode(), reply.latencyMs(),
         reply.inputTokens(), reply.outputTokens());

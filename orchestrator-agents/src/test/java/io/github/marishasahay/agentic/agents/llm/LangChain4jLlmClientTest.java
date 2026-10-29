@@ -37,7 +37,22 @@ class LangChain4jLlmClientTest {
   }
 
   @Test
-  void sendsSystemAndUserMessagesWithASchemaAndMapsTokenUsage() {
+  void rendersEveryContractAsAPromptShapeWithItsNestedFields() {
+    String shape = JsonShape.of(TaskPlan.class);
+
+    assertThat(shape).isEqualTo("{\"rationale\": \"string\", \"tasks\": [{\"id\": \"string\", "
+        + "\"title\": \"string\", \"description\": \"string\", \"requirementIds\": [\"string\"], "
+        + "\"files\": [\"string\"], \"dependsOn\": [\"string\"], "
+        + "\"acceptanceCriteria\": [\"string\"]}]}");
+    assertThat(JsonShape.of(RequirementSpec.class)).contains("\"functionalRequirements\": [{")
+        .contains("\"acceptanceCriteria\": [\"string\"]");
+    assertThat(JsonShape.of(Integer.class)).isEqualTo("0");
+    assertThat(JsonShape.of(Boolean.class)).isEqualTo("true");
+    assertThat(JsonShape.of(java.time.DayOfWeek.class)).startsWith("\"MONDAY|TUESDAY");
+  }
+
+  @Test
+  void sendsSystemAndUserMessagesInJsonModeAndMapsTokenUsage() {
     AtomicReference<ChatRequest> sent = new AtomicReference<>();
     ChatModel model = new ChatModel() {
       @Override
@@ -54,12 +69,29 @@ class LangChain4jLlmClientTest {
 
     assertThat(sent.get().messages()).hasSize(2);
     assertThat(sent.get().responseFormat().type()).isEqualTo(ResponseFormatType.JSON);
-    assertThat(sent.get().responseFormat().jsonSchema()).isNotNull();
+    assertThat(sent.get().responseFormat().jsonSchema()).isNull();
     assertThat(reply.text()).isEqualTo("{\"tasks\":[]}");
     assertThat(reply.model()).isEqualTo("gemini-test");
     assertThat(reply.mode()).isEqualTo("live");
     assertThat(reply.inputTokens()).isEqualTo(120);
     assertThat(reply.outputTokens()).isEqualTo(30);
+  }
+
+  @Test
+  void canStillSendTheProviderSchemaWhenEnabled() {
+    AtomicReference<ChatRequest> sent = new AtomicReference<>();
+    ChatModel model = new ChatModel() {
+      @Override
+      public ChatResponse doChat(ChatRequest request) {
+        sent.set(request);
+        return ChatResponse.builder().aiMessage(AiMessage.from("{}")).build();
+      }
+    };
+
+    new LangChain4jLlmClient(model, "m", true).complete(new LlmCall("k", "planner", "s", "u",
+        TaskPlan.class));
+
+    assertThat(sent.get().responseFormat().jsonSchema()).isNotNull();
   }
 
   @Test

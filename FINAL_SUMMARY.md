@@ -10,7 +10,7 @@ there and treated the URL shortener as the workload the orchestrator builds and 
    stop, audit, metrics, re-planning) is an explicit, unit-tested mechanism.
 2. **A real baseline service**, production-shaped (Spring Boot 4.1, PostgreSQL, Flyway,
    Testcontainers), so brownfield work happens on real code with a real defect.
-3. **Agents behind one seam** (LangChain4j, schema-constrained output, record/replay), with
+3. **Agents behind one seam** (LangChain4j, JSON-mode structured output, record/replay), with
    deterministic analysis (JavaParser) feeding model reasoning and deterministic gates judging it.
 4. **Evidence:** a deterministic governance drill that exercises every control under failure,
    live recorded scenarios, a hash-chained audit log, metrics and a run report.

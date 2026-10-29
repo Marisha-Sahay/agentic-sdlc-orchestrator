@@ -278,10 +278,11 @@ artifact versions and the full audit log.
 
 ## 8. Agents
 
-- **One seam to the model.** Agents call `AgentSupport.ask()` → `LlmClient`. The LangChain4j
-  adapter sends a JSON schema derived from the response record (`JsonSchemas.jsonSchemaFrom`), so
-  Gemini constrains decoding to the contract. A reply that does not parse fails the attempt with
-  the parse error as feedback.
+- **One seam to the model.** Agents call `AgentSupport.ask()` → `LlmClient`. The request uses
+  JSON mode, and the prompt carries the exact shape of the response record (`JsonShape`). A reply
+  that does not parse into the record fails the attempt with the parse error as feedback.
+  Provider-side schema enforcement is off: with nested schemas it made Gemini 2.5 Flash hang
+  ([ADR-0010](adr/0010-langchain4j-structured-output.md)).
 - **Record/replay.** `CassetteLlmClient` stores each exchange keyed by its position in the run
   (`node/e<execution>/attempt-<n>/<strategy>/<agent>`), not by prompt hash, because prompts contain
   non-deterministic text such as build output. The prompt hash is still stored; a replay whose

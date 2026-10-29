@@ -102,7 +102,8 @@ they are the orchestration and governance model.
 | `AgentSupport.ask` | Builds the replay key, appends retry feedback to the prompt, calls the model, records telemetry, parses the reply into the contract. |
 | `AgentSupport.parse` | Parses a reply into a contract record (tolerating Markdown fences); a mismatch fails the attempt with the error as feedback. |
 | `AgentSupport.feedbackSection` | Formats earlier rejections (gate output, policy findings, reviewer comments) into a bounded "fix these" prompt section. |
-| `LangChain4jLlmClient.complete` | Sends system and user messages with a JSON schema derived from the contract via LangChain4j, and maps token usage. |
+| `LangChain4jLlmClient.complete` | Sends system and user messages in JSON mode via LangChain4j (provider schema optional, off by default) and maps token usage. |
+| `JsonShape.of` | Renders a contract record as a JSON skeleton (fields, types, nested lists) for the prompt. |
 | `CassetteLlmClient.complete` | Live, record or replay dispatch keyed by `node/e<execution>/attempt-<n>/<strategy>/<agent>`. |
 | `CassetteLlmClient.replay` | Serves a stored reply; labels it `replay`, `replay-drift` or `fixture`; can raise a simulated outage. |
 | `ModelSettings.fromEnvironment` | Reads key and model names from the environment, treating `<placeholders>` as unset. |

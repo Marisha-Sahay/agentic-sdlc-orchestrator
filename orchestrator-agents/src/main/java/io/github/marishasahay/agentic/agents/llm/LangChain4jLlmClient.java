@@ -12,18 +12,33 @@ import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.output.JsonSchemas;
 
 /**
- * Adapter from {@link LlmClient} to any LangChain4j {@link ChatModel}. Structured calls send a
- * JSON schema derived from the response record, so the provider constrains decoding to the
- * contract instead of the agent hoping the model follows instructions.
+ * Adapter from {@link LlmClient} to any LangChain4j {@link ChatModel}. Structured calls request
+ * JSON mode; the expected shape is in the prompt ({@link JsonShape}) and the contract is enforced
+ * by parsing and gates. Provider-side schema enforcement is off by default because nested
+ * schemas made Gemini 2.5 Flash hang for minutes (ADR-0010); it can be switched back on per
+ * client for providers where it performs well.
  */
 public final class LangChain4jLlmClient implements LlmClient {
 
   private final ChatModel model;
   private final String modelName;
+  private final boolean providerSchema;
 
   public LangChain4jLlmClient(ChatModel model, String modelName) {
+    this(model, modelName, false);
+  }
+
+  /**
+   * Creates the adapter.
+   *
+   * @param model LangChain4j chat model
+   * @param modelName model name for telemetry
+   * @param providerSchema whether to send the JSON schema for provider-side enforcement
+   */
+  public LangChain4jLlmClient(ChatModel model, String modelName, boolean providerSchema) {
     this.model = model;
     this.modelName = modelName;
+    this.providerSchema = providerSchema;
   }
 
   @Override
@@ -31,10 +46,12 @@ public final class LangChain4jLlmClient implements LlmClient {
     ChatRequest.Builder request = ChatRequest.builder()
         .messages(SystemMessage.from(call.systemPrompt()), UserMessage.from(call.userPrompt()));
     if (call.responseType() != null && call.responseType() != String.class) {
-      JsonSchema schema = JsonSchemas.jsonSchemaFrom(call.responseType()).orElse(null);
       ResponseFormat.Builder format = ResponseFormat.builder().type(ResponseFormatType.JSON);
-      if (schema != null) {
-        format.jsonSchema(schema);
+      if (providerSchema) {
+        JsonSchema schema = JsonSchemas.jsonSchemaFrom(call.responseType()).orElse(null);
+        if (schema != null) {
+          format.jsonSchema(schema);
+        }
       }
       request.responseFormat(format.build());
     }
