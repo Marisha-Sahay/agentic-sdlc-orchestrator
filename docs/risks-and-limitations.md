@@ -16,6 +16,7 @@
 | Reviewer unreachable, terminal closed, scripted decision missing or not covering a reason | `ReviewerUnavailableException` | Rollback; run pauses; resumable with a reviewer |
 | Reviewer amendment is malformed or names an unknown artifact | Contract validation and policy on amendments | Refused and re-asked (bounded), then paused |
 | Audit log cannot be written | Fail-stop log | Run stops, attempt rolled back, outcome says the log is incomplete |
+| A second process runs or resumes a run that is still in progress | Run directory lock | Refused with the owner's pid; prevents interleaved logs and workspace rollbacks |
 | Run resumed from a tampered log or modified artifacts, or with another workflow | Hash chain, artifact hashes, identity check | Resume refused |
 | Docker unavailable | Degraded build profile | Final validation records DEGRADED; release needs an explicit waiver |
 | Agent edits an applied migration | `schema-migration` policy | Blocked; new migrations need human approval |

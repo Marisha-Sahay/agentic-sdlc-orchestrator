@@ -77,6 +77,8 @@ public final class AgenticCli {
   private final Semaphore modelCallPermits = new Semaphore(Integer.parseInt(
       System.getenv().getOrDefault("AGENTIC_MAX_CONCURRENT_CALLS", "2")));
 
+  private RunLock runLock;
+
   private AgenticCli(Path repo) {
     this.repo = repo;
   }
@@ -151,6 +153,9 @@ public final class AgenticCli {
       }
     }
     String runId = runDir.getFileName().toString();
+    // Held (and referenced, so it is never collected) until this process exits: one process
+    // per run, or the log and workspace interleave.
+    runLock = RunLock.acquire(runDir);
     CommandSandbox sandbox = sandbox(sandboxName);
 
     ModelSettings models = ModelSettings.fromEnvironment(System.getenv());
@@ -199,6 +204,9 @@ public final class AgenticCli {
 
     CountDownLatch finished = new CountDownLatch(1);
     Thread hook = new Thread(() -> {
+      System.err.println(Ansi.yellow("\nStopping safely: no new attempts start; running ones "
+          + "(model calls, reviewer prompts) finish first. The run stays locked until this "
+          + "process exits, then: agentic resume " + runId));
       engine.stopController().requestStop("operator interrupt (SIGINT)");
       awaitQuietly(finished);
     });

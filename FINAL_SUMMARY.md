@@ -48,7 +48,7 @@ accept what was validated; one hash-chained event log records all of it.
 
 ## Validation (what was run, and what it showed)
 
-- `mvn verify` (all modules, with Docker): **291 tests pass**, Checkstyle clean, coverage gates met
+- `mvn verify` (all modules, with Docker): **292 tests pass**, Checkstyle clean, coverage gates met
   (core 89.8% line; v1 service 99.6%).
 - **Final service:** 153 unit + 24 PostgreSQL integration tests, 99.3% line coverage; it is
   byte-identical to the code developed and tested for v2.
@@ -67,8 +67,10 @@ accept what was validated; one hash-chained event log records all of it.
 - **Live model (partial):** one recorded brownfield run with Gemini 2.5 Flash reached
   implementation (grounded impact analysis, rejection loop, 8-task plan, issue #1 fix compiled)
   and then paused, fail-closed, on a schema migration and a new third-party dependency that no
-  reviewer had decided ([live.md](docs/scenarios/live.md)). No live run has reached release;
-  greenfield and ambiguous were not run live.
+  reviewer had decided. A human then resumed it as reviewer (rejected an unneeded index, which the
+  model removed; authorized a dependency whose version does not exist, which the compile gate
+  caught) until the provider's daily quota ran out ([live.md](docs/scenarios/live.md)). No live
+  run has reached release; greenfield and ambiguous were not run live.
 - **Docker sandbox:** the drill ran with every build in the container (no network, limits,
   PostgreSQL sidecar) and succeeded on the same path in 44 s; a probe inside saw no API key, no
   host files, no internet, no Docker socket.
