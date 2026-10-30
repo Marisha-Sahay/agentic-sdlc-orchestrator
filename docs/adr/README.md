@@ -19,3 +19,4 @@
 | [0015](0015-in-process-rate-limiting.md) | In-process token-bucket rate limiting on link creation | Service |
 | [0016](0016-authorization-acceptance-and-tree-bound-evidence.md) | Authorize before execution, accept a validated tree, bind evidence to it | Governance |
 | [0017](0017-best-effort-click-analytics.md) | Best-effort click analytics through a bounded in-memory queue | Service |
+| [0018](0018-token-authentication-and-link-ownership.md) | Token authentication and link ownership (proposed, not implemented) | Service |

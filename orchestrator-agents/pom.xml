@@ -6,12 +6,12 @@
 
   <parent>
     <groupId>io.github.marishasahay.agentic</groupId>
-    <artifactId>agentic-swe-urlshortener</artifactId>
+    <artifactId>agentic-sdlc-orchestrator</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>orchestrator-agents</artifactId>
-  <name>Agentic SWE :: Agents</name>
+  <name>Agentic SDLC Orchestrator :: Agents</name>
   <description>
     SDLC agents (requirements, design, planning, implementation, testing, docs, release) built
     with LangChain4j, plus record/replay of model calls and codebase analysis with JavaParser.

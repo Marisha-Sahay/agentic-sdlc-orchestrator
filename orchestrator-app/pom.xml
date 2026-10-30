@@ -6,12 +6,12 @@
 
   <parent>
     <groupId>io.github.marishasahay.agentic</groupId>
-    <artifactId>agentic-swe-urlshortener</artifactId>
+    <artifactId>agentic-sdlc-orchestrator</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>orchestrator-app</artifactId>
-  <name>Agentic SWE :: CLI</name>
+  <name>Agentic SDLC Orchestrator :: CLI</name>
   <description>
     Command-line entry point: scenario loading, workflow templates, console approvals, live
     progress, run reports and cross-run metrics.

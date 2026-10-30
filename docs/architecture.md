@@ -278,7 +278,7 @@ by default, and a run without a terminal must select scripted decisions explicit
 
 ## 7. Observability and traceability
 
-**Event log.** Every state change is a typed `RunEvent` (21 types: node started, gate evaluated,
+**Event log.** Every state change is a typed `RunEvent` (25 types: node started, gate evaluated,
 policy evaluated, attempt failed, fallback, rollback, approval requested/resolved, artifact
 produced, decision recorded, model called, graph expanded, node invalidated, stop requested, ...)
 appended to `events.jsonl`. Each envelope carries a sequence number, timestamp and

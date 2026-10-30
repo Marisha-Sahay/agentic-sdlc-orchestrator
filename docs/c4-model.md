@@ -22,7 +22,7 @@ flowchart TB
   stakeholder(["<b>Stakeholder</b><br/>[Person]<br/><small>States the requirement;<br/>answers clarifying questions</small>"])
   reviewer(["<b>Reviewer</b><br/>[Person]<br/><small>Signs off design, high-impact<br/>changes and release</small>"])
 
-  agentic["<b>Agentic SWE System</b><br/>[Software system]<br/><small>Turns a requirement into a reviewable,<br/>tested patch under governance</small>"]
+  agentic["<b>Agentic SDLC Orchestrator</b><br/>[Software system]<br/><small>Turns a requirement into a reviewable,<br/>tested patch under governance</small>"]
 
   llm["<b>Gemini API</b><br/>[External system]<br/><small>LLM used by the agents</small>"]
   toolchain["<b>Build toolchain</b><br/>[External system]<br/><small>Maven, JDK 21, Docker,<br/>Testcontainers PostgreSQL</small>"]
@@ -48,7 +48,7 @@ flowchart TB
 | Engineer | Operates runs: `agentic run / stop / resume / report / metrics / verify-log` |
 | Stakeholder | Owns the requirement; answers the open questions at the clarification checkpoint |
 | Reviewer | Human authority at checkpoints; can reject with feedback or amend any artifact |
-| Agentic SWE System | Orchestrates SDLC agents under policy, gates, approvals and an audit log |
+| Agentic SDLC Orchestrator | Orchestrates SDLC agents under policy, gates, approvals and an audit log |
 | Gemini API | Model behind every agent in live/record mode; replaced by cassettes in replay |
 | Build toolchain | Deterministic gates: compiler, unit and integration tests, Checkstyle, coverage |
 | Target codebase | Read-only input; each run works on a private copy and outputs `release.patch` |
@@ -62,7 +62,7 @@ unit or data store), not a Docker container.
 flowchart TB
   user(["<b>Engineer / Reviewer</b><br/>[Person]"])
 
-  subgraph sys["Agentic SWE System"]
+  subgraph sys["Agentic SDLC Orchestrator"]
     direction TB
     cli["<b>agentic CLI</b><br/>[Container: Java 21 JVM process]<br/><small>Workflow templates, graph engine, agents,<br/>console approvals, live progress, reporting</small>"]
     scenarios[("<b>Scenario definitions</b><br/>[YAML + scaffold]<br/><small>requirement, baseline,<br/>scripted reviewer decisions</small>")]

@@ -6,12 +6,12 @@
 
   <parent>
     <groupId>io.github.marishasahay.agentic</groupId>
-    <artifactId>agentic-swe-urlshortener</artifactId>
+    <artifactId>agentic-sdlc-orchestrator</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>orchestrator-core</artifactId>
-  <name>Agentic SWE :: Orchestrator Core</name>
+  <name>Agentic SDLC Orchestrator :: Orchestrator Core</name>
   <description>
     Framework-free workflow engine: dependency graph, gates, policy guardrails, approvals,
     retries/fallback/rollback, safe-stop, hash-chained event log and reliability metrics.

@@ -33,7 +33,7 @@ audit file that becomes a directory mid-run.
 
 ## Gates on the test code itself
 Every module runs Checkstyle (warnings fail the build) and an 80% line coverage gate. Line
-coverage: orchestrator-core 89.8%, v1 service 99.6%, final service 99.3% (unit + integration,
+coverage: orchestrator-core 86.1%, v1 service 99.6%, final service 99.3% (unit + integration,
 merged). `AgenticCli` (composition root) and the service `main` class are excluded.
 
 ## Execution sandbox

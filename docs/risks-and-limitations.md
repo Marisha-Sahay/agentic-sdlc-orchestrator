@@ -66,7 +66,7 @@
 - **The security scanner is pattern-based**, not SAST/SCA; the model review is advisory.
 - **Positional replay can drift** when the workflow changes; drift is labelled.
 - **Service scope:** click analytics are best effort ([ADR-0017](adr/0017-best-effort-click-analytics.md));
-  the management and statistics API is unauthenticated; cache, deletion visibility and rate limits
+  the management and statistics API is unauthenticated (production design: [ADR-0018](adr/0018-token-authentication-and-link-ownership.md)); cache, deletion visibility and rate limits
   are per instance (see the final service README, "Scale and reliability boundaries"). The 2,000
   redirects/s target is measured once on a laptop, not verified for production.
 

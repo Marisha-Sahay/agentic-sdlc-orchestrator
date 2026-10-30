@@ -509,7 +509,7 @@ public final class AgenticCli {
       }
       dir = dir.getParent();
     }
-    throw new IllegalStateException("Run from inside the agentic-swe-urlshortener repository");
+    throw new IllegalStateException("Run from inside the agentic-sdlc-orchestrator repository");
   }
 
   private static void awaitQuietly(CountDownLatch latch) {

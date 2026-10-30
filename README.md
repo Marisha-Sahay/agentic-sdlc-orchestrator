@@ -1,4 +1,4 @@
-# Agentic SWE: governed SDLC orchestration, applied to a URL shortener
+# Agentic SDLC Orchestrator: governed software delivery, applied to a URL shortener
 
 An agentic software-engineering system that turns a requirement into a **reviewable engineering
 outcome**: a tested, documented patch with a traceability matrix, release notes and a

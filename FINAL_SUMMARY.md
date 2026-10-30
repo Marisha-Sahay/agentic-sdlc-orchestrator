@@ -26,7 +26,7 @@ accept what was validated; one hash-chained event log records all of it.
 | v1 service (stable baseline) | `url-shortener/` |
 | **Final service** (v1 + click analytics + issue #1 fix) | `tools/final-service.sh` → `target/final-service` (v1 + [brownfield release.patch](docs/evidence/brownfield/release.patch)) |
 | Scenarios and evidence | [docs/scenarios](docs/scenarios/README.md), [docs/evidence](docs/evidence) |
-| Architecture and decisions | [architecture.md](docs/architecture.md), [c4-model.md](docs/c4-model.md), [ADRs](docs/adr) (17) |
+| Architecture and decisions | [architecture.md](docs/architecture.md), [c4-model.md](docs/c4-model.md), [ADRs](docs/adr) (17 accepted, 1 proposed) |
 | Requirement-to-evidence checklist | [requirements-traceability.md](docs/requirements-traceability.md) |
 | Testing, risks, AI log | [testing.md](docs/testing.md), [risks-and-limitations.md](docs/risks-and-limitations.md), [ai-collaboration-log.md](docs/ai-collaboration-log.md) |
 
@@ -49,7 +49,7 @@ accept what was validated; one hash-chained event log records all of it.
 ## Validation (what was run, and what it showed)
 
 - `mvn verify` (all modules, with Docker): **292 tests pass**, Checkstyle clean, coverage gates met
-  (core 89.8% line; v1 service 99.6%).
+  (core 86.1% line; v1 service 99.6%).
 - **Final service:** 153 unit + 24 PostgreSQL integration tests, 99.3% line coverage; it is
   byte-identical to the code developed and tested for v2.
 - **Scenarios** (each about 35-40 s, all SUCCEEDED, evidence checked by `agentic check-evidence`):

@@ -5,10 +5,10 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>io.github.marishasahay.agentic</groupId>
-  <artifactId>agentic-swe-urlshortener</artifactId>
+  <artifactId>agentic-sdlc-orchestrator</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
-  <name>Agentic SWE :: Parent</name>
+  <name>Agentic SDLC Orchestrator :: Parent</name>
   <description>
     Agentic software-engineering orchestrator (pure Java 21 graph engine + LangChain4j agents)
     and the URL shortener service it builds and evolves.
