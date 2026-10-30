@@ -5,7 +5,7 @@ and the service it produces (is the output production quality?). The orchestrato
 also tested by real builds inside every run.
 
 ```bash
-mvn verify                                   # 292 tests, Checkstyle, coverage gates (Docker)
+mvn verify                                   # 297 tests, Checkstyle, coverage gates (Docker)
 ./agentic run drill                          # governance drill (~35 s)
 ./agentic run brownfield --approvals scripted
 tools/final-service.sh && mvn -f target/final-service/pom.xml verify   # final service
@@ -20,7 +20,7 @@ tools/final-service.sh && mvn -f target/final-service/pom.xml verify   # final s
 | Recovery | Resume refuses a tampered log, a modified artifact, a different workflow; recovers only accepted work when cut after a checkpoint, after artifact publication, and after the success event (4 crash points, from a real run's truncated log); budgets carried over or reset with a record | `ResumeTest` | 8 |
 | Core components | Graph validation, policy rules incl. build integrity (7 ways to weaken a gate) and stage scopes, git workspace incl. snapshots, hash-chained log, metrics, command gates and sandboxes, scripted gateway | `orchestrator-core` | 46 |
 | Agent contracts | Each agent in a real engine with a scripted model and git workspace; degraded verification needs a waiver; final validation marks evidence stale after a code repair | `orchestrator-agents` | 52 |
-| CLI and reporting | Templates (evidence order, overlap serialisation), approval-mode resolution (no auto-approve, unknown modes rejected), evidence checker (missing or tampered evidence fails, including an exported patch that differs from the accepted artifact), run lock (a second process is refused), report and console | `orchestrator-app` | 17 |
+| CLI and reporting | Templates (evidence order, overlap serialisation), approval-mode resolution (no auto-approve, unknown modes rejected), evidence checker (missing or tampered evidence fails, including an exported patch that differs from the accepted artifact, a release committed on a tree other than the validated one or accepted in an earlier attempt, and a run that never reached release), only the accepted patch is exported, run lock (a second process is refused; a run that cannot start leaves its run id free), report and console | `orchestrator-app` | 22 |
 | v1 service | Unit 126, Testcontainers ITs 16 | `url-shortener` | 142 |
 | Final service | Unit 153, ITs 24 incl. `ClickAnalyticsIT`, `CachedLinkExpiryIT`, `ContractConformanceIT` | `target/final-service` (CI) | 177 |
 | End to end | Four scenarios through the CLI with real agents, policy, gates, Maven builds; replies are hand-authored fixtures | CI step; `docs/evidence` | 4 runs |

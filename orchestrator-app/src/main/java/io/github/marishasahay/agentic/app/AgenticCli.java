@@ -22,6 +22,7 @@ import io.github.marishasahay.agentic.core.engine.WorkflowEngine;
 import io.github.marishasahay.agentic.core.event.EventEnvelope;
 import io.github.marishasahay.agentic.core.event.EventLog;
 import io.github.marishasahay.agentic.core.event.Json;
+import io.github.marishasahay.agentic.core.event.RunEvent;
 import io.github.marishasahay.agentic.core.gate.CommandGate;
 import io.github.marishasahay.agentic.core.gate.CommandSandbox;
 import io.github.marishasahay.agentic.core.gate.DockerSandbox;
@@ -153,15 +154,15 @@ public final class AgenticCli {
       }
     }
     String runId = runDir.getFileName().toString();
-    // Held (and referenced, so it is never collected) until this process exits: one process
-    // per run, or the log and workspace interleave.
-    runLock = RunLock.acquire(runDir);
     CommandSandbox sandbox = sandbox(sandboxName);
-
     ModelSettings models = ModelSettings.fromEnvironment(System.getenv());
     Path cassettes = repo.resolve("cassettes").resolve(cassetteSet);
     AgentSupport primary = new AgentSupport(llm(models, models.primaryModel(), cassettes, mode));
     AgentSupport fallback = new AgentSupport(llm(models, models.fallbackModel(), cassettes, mode));
+    // Taken only after everything above that can reject the command, because taking it creates
+    // the run directory. Held (and referenced, so it is never collected) until this process
+    // exits: one process per run, or the log and workspace interleave.
+    runLock = RunLock.acquire(runDir);
     if (!resume) {
       write(runDir.resolve("run.json"), Json.write(Map.of("scenario", scenario.name(),
           "llm", mode.name(), "approvals", approvalsMode, "cassettes", cassetteSet,
@@ -349,8 +350,19 @@ public final class AgenticCli {
 
   private RunMetrics renderReport(Path runDir, List<EventEnvelope> events, String mermaid) {
     RunMetrics metrics = MetricsCalculator.compute(events);
-    latestVersion(runDir.resolve("artifacts").resolve("release.patch"))
-        .ifPresent(v -> write(runDir.resolve("release.patch"), read(v)));
+    // Only the patch the accepted release named is exported: a higher version on disk can be
+    // one that was persisted and then withdrawn. Without an accepted release there is none.
+    Path exported = runDir.resolve("release.patch");
+    Optional<RunEvent.ArtifactProduced> accepted = EvidenceCheck.acceptedPatch(events);
+    if (accepted.isPresent()) {
+      write(exported, read(runDir.resolve("artifacts").resolve(accepted.get().path())));
+    } else {
+      try {
+        Files.deleteIfExists(exported);
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
     write(runDir.resolve("report.html"), HtmlReport.render(events, mermaid, metrics));
     write(runDir.resolve("metrics.json"), AgentSupport.pretty(metrics));
     return metrics;
@@ -471,21 +483,6 @@ public final class AgenticCli {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
-  }
-
-  private static Optional<Path> latestVersion(Path artifactDir) {
-    if (!Files.isDirectory(artifactDir)) {
-      return Optional.empty();
-    }
-    try (Stream<Path> versions = Files.list(artifactDir)) {
-      return versions.max((a, b) -> Integer.compare(version(a), version(b)));
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-  }
-
-  private static int version(Path file) {
-    return Integer.parseInt(file.getFileName().toString().replaceAll("\\D", ""));
   }
 
   static boolean dockerAvailable() {

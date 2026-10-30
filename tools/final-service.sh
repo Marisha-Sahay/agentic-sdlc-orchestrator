@@ -20,8 +20,10 @@ for path in "$ROOT/target" "$OUT"; do
   fi
 done
 rm -rf "$OUT" && mkdir -p "$OUT"
-(cd "$ROOT" && git ls-files -z url-shortener | while IFS= read -r -d '' f; do
-  mkdir -p "$OUT/$(dirname "${f#url-shortener/}")" && cp "$f" "$OUT/${f#url-shortener/}"
-done)
+# The committed v1, never local edits: the final service is exactly v1 plus the released patch.
+if [[ -n "$(git -C "$ROOT" status --porcelain -- url-shortener)" ]]; then
+  echo "note: uncommitted changes under url-shortener/ are not included" >&2
+fi
+git -C "$ROOT" archive --format=tar HEAD url-shortener | tar -x -C "$OUT" --strip-components=1
 git -C "$OUT" init -q && git -C "$OUT" apply --whitespace=nowarn "$PATCH"
 echo "Final service written to $OUT ($(grep -c '^diff --git' "$PATCH") files changed from v1)"

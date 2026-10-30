@@ -22,6 +22,18 @@ public record Artifact(
    * @return e.g. {@code design.openapi@v2#1a2b3c4d5e6f}
    */
   public String ref() {
+    return ref(key, version, sha256);
+  }
+
+  /**
+   * The {@link #ref()} of a version known only by its parts, e.g. from the event log.
+   *
+   * @param key artifact key
+   * @param version version number
+   * @param sha256 hex SHA-256 of the content
+   * @return e.g. {@code design.openapi@v2#1a2b3c4d5e6f}
+   */
+  public static String ref(String key, int version, String sha256) {
     return key + "@v" + version + "#" + sha256.substring(0, 12);
   }
 }
