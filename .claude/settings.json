@@ -10,6 +10,16 @@
             "timeout": 150
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-pom-dependency.py",
+            "timeout": 30
+          }
+        ]
       }
     ]
   }
